@@ -1,0 +1,565 @@
+{% extends "base.html" %}
+
+{% block title %}Review Images - NWK Image System{% endblock %}
+
+{% block extra_css %}
+<style>
+    .review-controls {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+        padding: 1rem;
+        background: #f8f9fa;
+        border-radius: 4px;
+    }
+    
+    .bulk-actions {
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+    }
+    
+    .image-card.selected {
+        border: 3px solid #3498db;
+        box-shadow: 0 4px 16px rgba(52, 152, 219, 0.3);
+    }
+    
+    .checkbox-wrapper {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        z-index: 10;
+    }
+    
+    .checkbox-wrapper input[type="checkbox"] {
+        width: 20px;
+        height: 20px;
+        cursor: pointer;
+    }
+    
+    .product-details {
+        font-size: 0.875rem;
+        color: #666;
+        margin: 0.5rem 0;
+    }
+    
+    .product-details strong {
+        color: #333;
+    }
+    
+    .no-image-placeholder {
+        width: 100%;
+        height: 200px;
+        background: #e0e0e0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #666;
+    }
+    
+    .filter-controls {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+    
+    .confidence-filter {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    
+    .stats-bar {
+        background: #f0f0f0;
+        padding: 1rem;
+        border-radius: 4px;
+        display: flex;
+        justify-content: space-around;
+        margin-bottom: 1rem;
+    }
+    
+    .stat-item {
+        text-align: center;
+    }
+    
+    .stat-value {
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: #333;
+    }
+    
+    .stat-label {
+        font-size: 0.875rem;
+        color: #666;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2>Review Pending Images</h2>
+    </div>
+    
+    <div class="stats-bar">
+        <div class="stat-item">
+            <div class="stat-value" id="total-count">{{ products|length }}</div>
+            <div class="stat-label">Total Pending</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value" id="selected-count">0</div>
+            <div class="stat-label">Selected</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value" id="high-confidence">0</div>
+            <div class="stat-label">High Confidence (>80%)</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value" id="low-confidence">0</div>
+            <div class="stat-label">Low Confidence (<50%)</div>
+        </div>
+    </div>
+    
+    {% if products %}
+    <div class="review-controls">
+        <div class="bulk-actions">
+            <label>
+                <input type="checkbox" id="select-all"> Select All
+            </label>
+            <button class="btn btn-success" onclick="bulkAction('approve')" id="bulk-approve">
+                Approve Selected (<span class="selected-counter">0</span>)
+            </button>
+            <button class="btn btn-danger" onclick="bulkAction('decline')" id="bulk-decline">
+                Decline Selected (<span class="selected-counter">0</span>)
+            </button>
+        </div>
+        
+        <div class="filter-controls">
+            <div class="confidence-filter">
+                <label>Min Confidence:</label>
+                <input type="range" id="confidence-filter" min="0" max="100" value="0" style="width: 150px;">
+                <span id="confidence-value">0%</span>
+            </div>
+            <button class="btn" onclick="autoApproveHighConfidence()">
+                Auto-Approve >80%
+            </button>
+        </div>
+    </div>
+    
+    <div class="image-grid" id="products-grid">
+        {% for product in products %}
+        <div class="image-card" data-sku="{{ product.Variant_SKU }}" data-confidence="{{ product.confidence or 0 }}">
+            <div class="checkbox-wrapper">
+                <input type="checkbox" class="product-checkbox" data-sku="{{ product.Variant_SKU }}">
+            </div>
+            
+            {% if product.image_url %}
+            <div class="image-container" style="position: relative;">
+                <img src="{{ product.image_url }}" 
+                     alt="{{ product.Title }}" 
+                     class="image-preview"
+                     style="cursor: zoom-in;"
+                     onclick="openImageModal('{{ product.image_url }}', '{{ product.Title }}', '{{ product.Variant_SKU }}')"
+                     onload="console.log('✓ Image loaded: {{ product.Variant_SKU }}');"
+                     onerror="console.error('✗ Failed to load image: {{ product.image_url }} for SKU: {{ product.Variant_SKU }}'); this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                <div class="zoom-indicator" style="position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.7); color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; pointer-events: none;">
+                    🔍 Click to enlarge
+                </div>
+            </div>
+            <div class="no-image-placeholder" style="display: none;">
+                <strong>Image Load Failed</strong><br>
+                <small>SKU: {{ product.Variant_SKU }}</small><br>
+                <small>Path: {{ product.downloaded_image_path or 'N/A' }}</small>
+            </div>
+            {% else %}
+            <div class="no-image-placeholder">
+                <strong>No Image Available</strong><br>
+                <small>SKU: {{ product.Variant_SKU }}</small><br>
+                <small>Status: {{ product.image_status or 'Unknown' }}</small><br>
+                {% if product.downloaded_image_path %}
+                <small>Path: {{ product.downloaded_image_path }}</small>
+                {% else %}
+                <small>No image path in database</small>
+                {% endif %}
+            </div>
+            {% endif %}
+            
+            <div class="image-info">
+                <div class="image-title">{{ product.Title }}</div>
+                <div class="product-details">
+                    <strong>Brand:</strong> {{ product.Brand or 'Unknown' }}<br>
+                    <strong>SKU:</strong> {{ product.Variant_SKU }}<br>
+                    <strong>Barcode:</strong> {{ product.Variant_Barcode or 'N/A' }}
+                </div>
+                
+                {% if product.scraped_description and product.scraped_description.strip() %}
+                <div class="product-description" style="margin: 0.5rem 0; padding: 0.5rem; background: #f8f9fa; border-radius: 4px; border-left: 3px solid #3498db;">
+                    <strong>Product Description:</strong><br>
+                    <small style="color: #555; line-height: 1.3;">{{ product.scraped_description }}</small>
+                </div>
+                {% endif %}
+                
+                <div style="margin: 0.5rem 0;">
+                    <span class="confidence-badge confidence-{{ 'high' if product.confidence > 80 else 'medium' if product.confidence > 50 else 'low' }}">
+                        Confidence: {{ "%.0f"|format(product.confidence or 0) }}%
+                    </span>
+                </div>
+                <div class="product-details">
+                    <strong>Search Query:</strong> {{ product.search_query or 'N/A' }}<br>
+                    <strong>Source:</strong> {{ product.image_source or 'Unknown' }}
+                </div>
+            </div>
+            
+            <div class="image-actions">
+                <button class="btn btn-success btn-sm" style="flex: 1;" 
+                        onclick="approveProduct('{{ product.Variant_SKU }}')">
+                    Approve
+                </button>
+                <button class="btn btn-danger btn-sm" style="flex: 1;"
+                        onclick="declineProduct('{{ product.Variant_SKU }}')">
+                    Decline
+                </button>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="alert alert-warning">
+        No pending images to review. Great job!
+    </div>
+    {% endif %}
+</div>
+
+<script>
+// Track selected products
+let selectedProducts = new Set();
+
+// Initialize statistics - ensure available globally
+window.updateStatistics = function() {
+    const products = document.querySelectorAll('.image-card');
+    let highConfidence = 0;
+    let lowConfidence = 0;
+    
+    products.forEach(card => {
+        const confidence = parseFloat(card.dataset.confidence);
+        if (confidence > 80) highConfidence++;
+        if (confidence < 50) lowConfidence++;
+    });
+    
+    document.getElementById('high-confidence').textContent = highConfidence;
+    document.getElementById('low-confidence').textContent = lowConfidence;
+}
+
+// Update selected count - ensure available globally
+window.updateSelectedCount = function() {
+    const count = selectedProducts.size;
+    document.getElementById('selected-count').textContent = count;
+    document.querySelectorAll('.selected-counter').forEach(el => {
+        el.textContent = count;
+    });
+}
+
+// Handle select all
+document.getElementById('select-all')?.addEventListener('change', function(e) {
+    const checkboxes = document.querySelectorAll('.product-checkbox');
+    checkboxes.forEach(checkbox => {
+        checkbox.checked = e.target.checked;
+        const card = checkbox.closest('.image-card');
+        const sku = checkbox.dataset.sku;
+        
+        if (e.target.checked) {
+            selectedProducts.add(sku);
+            card.classList.add('selected');
+        } else {
+            selectedProducts.delete(sku);
+            card.classList.remove('selected');
+        }
+    });
+    updateSelectedCount();
+});
+
+// Handle individual checkbox
+document.querySelectorAll('.product-checkbox').forEach(checkbox => {
+    checkbox.addEventListener('change', function(e) {
+        const card = e.target.closest('.image-card');
+        const sku = e.target.dataset.sku;
+        
+        if (e.target.checked) {
+            selectedProducts.add(sku);
+            card.classList.add('selected');
+        } else {
+            selectedProducts.delete(sku);
+            card.classList.remove('selected');
+        }
+        updateSelectedCount();
+    });
+});
+
+// Confidence filter
+document.getElementById('confidence-filter')?.addEventListener('input', function(e) {
+    const minConfidence = parseInt(e.target.value);
+    document.getElementById('confidence-value').textContent = minConfidence + '%';
+    
+    document.querySelectorAll('.image-card').forEach(card => {
+        const confidence = parseFloat(card.dataset.confidence);
+        if (confidence < minConfidence) {
+            card.style.display = 'none';
+        } else {
+            card.style.display = '';
+        }
+    });
+});
+
+// Approve product - ensure available globally immediately
+window.approveProduct = async function(sku) {
+    // Safety check - wait for functions to be available
+    if (typeof apiCall !== 'function' || typeof showAlert !== 'function') {
+        alert(`Functions not ready yet. Please wait a moment and try again.`);
+        return;
+    }
+    
+    try {
+        const result = await apiCall(`/api/approve/${sku}`);
+        showAlert(`Product ${sku} approved!`, 'success');
+        
+        // Remove from view
+        const card = document.querySelector(`[data-sku="${sku}"]`);
+        if (card) {
+            card.style.transition = 'opacity 0.3s';
+            card.style.opacity = '0';
+            setTimeout(() => card.remove(), 300);
+        }
+        
+        // Update count
+        const totalCount = document.getElementById('total-count');
+        totalCount.textContent = parseInt(totalCount.textContent) - 1;
+        
+    } catch (error) {
+        showAlert('Failed to approve: ' + error.message, 'error');
+    }
+}
+
+// Decline product - ensure available globally immediately  
+window.declineProduct = async function(sku) {
+    // Safety check - wait for functions to be available
+    if (typeof apiCall !== 'function' || typeof showAlert !== 'function') {
+        alert(`Functions not ready yet. Please wait a moment and try again.`);
+        return;
+    }
+    
+    try {
+        const result = await apiCall(`/api/decline/${sku}`);
+        showAlert(`Product ${sku} declined`, 'warning');
+        
+        // Remove from view
+        const card = document.querySelector(`[data-sku="${sku}"]`);
+        if (card) {
+            card.style.transition = 'opacity 0.3s';
+            card.style.opacity = '0';
+            setTimeout(() => card.remove(), 300);
+        }
+        
+        // Update count
+        const totalCount = document.getElementById('total-count');
+        totalCount.textContent = parseInt(totalCount.textContent) - 1;
+        
+    } catch (error) {
+        showAlert('Failed to decline: ' + error.message, 'error');
+    }
+}
+
+// Bulk action - ensure available globally immediately
+window.bulkAction = async function(action) {
+    // Safety check - wait for functions to be available
+    if (typeof apiCall !== 'function' || typeof showAlert !== 'function') {
+        alert(`Functions not ready yet. Please wait a moment and try again.`);
+        return;
+    }
+    
+    if (selectedProducts.size === 0) {
+        showAlert('Please select products first', 'warning');
+        return;
+    }
+    
+    const confirmMsg = `${action === 'approve' ? 'Approve' : 'Decline'} ${selectedProducts.size} products?`;
+    if (!confirm(confirmMsg)) return;
+    
+    try {
+        const result = await apiCall('/api/bulk-action', 'POST', {
+            action: action,
+            skus: Array.from(selectedProducts)
+        });
+        
+        showAlert(result.message, 'success');
+        
+        // Remove processed cards
+        selectedProducts.forEach(sku => {
+            const card = document.querySelector(`[data-sku="${sku}"]`);
+            if (card) card.remove();
+        });
+        
+        // Update count
+        const totalCount = document.getElementById('total-count');
+        totalCount.textContent = parseInt(totalCount.textContent) - selectedProducts.size;
+        
+        selectedProducts.clear();
+        updateSelectedCount();
+        
+    } catch (error) {
+        showAlert('Bulk action failed: ' + error.message, 'error');
+    }
+}
+
+// Auto-approve high confidence - ensure available globally immediately
+window.autoApproveHighConfidence = async function() {
+    // Safety check - wait for functions to be available
+    if (typeof apiCall !== 'function' || typeof showAlert !== 'function') {
+        alert(`Functions not ready yet. Please wait a moment and try again.`);
+        return;
+    }
+    
+    const highConfidenceCards = document.querySelectorAll('.image-card[data-confidence]');
+    const toApprove = [];
+    
+    highConfidenceCards.forEach(card => {
+        const confidence = parseFloat(card.dataset.confidence);
+        if (confidence > 80) {
+            toApprove.push(card.dataset.sku);
+        }
+    });
+    
+    if (toApprove.length === 0) {
+        showAlert('No high confidence products found', 'warning');
+        return;
+    }
+    
+    if (!confirm(`Auto-approve ${toApprove.length} products with >80% confidence?`)) return;
+    
+    try {
+        const result = await apiCall('/api/bulk-action', 'POST', {
+            action: 'approve',
+            skus: toApprove
+        });
+        
+        showAlert(result.message, 'success');
+        
+        // Remove approved cards
+        toApprove.forEach(sku => {
+            const card = document.querySelector(`[data-sku="${sku}"]`);
+            if (card) card.remove();
+        });
+        
+        // Update count
+        const totalCount = document.getElementById('total-count');
+        totalCount.textContent = parseInt(totalCount.textContent) - toApprove.length;
+        
+        updateStatistics();
+        
+    } catch (error) {
+        showAlert('Auto-approve failed: ' + error.message, 'error');
+    }
+}
+
+// Initialize when DOM and scripts are ready
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('Review page loaded');
+    
+    // Initialize statistics now that DOM is ready
+    updateStatistics();
+    
+    // Test apiCall availability
+    if (typeof apiCall === 'function') {
+        console.log('✓ apiCall function is available on review page');
+    } else {
+        console.error('✗ apiCall function not found on review page');
+        if (typeof showAlert === 'function') {
+            showAlert('JavaScript functions not loaded properly. Please refresh the page.', 'error');
+        } else {
+            alert('JavaScript functions not loaded properly. Please refresh the page.');
+        }
+    }
+});
+
+// Global variable to track current modal SKU
+let currentModalSku = '';
+
+// Open image modal
+window.openImageModal = function(imageUrl, title, sku) {
+    currentModalSku = sku;
+    document.getElementById('modalImage').src = imageUrl;
+    document.getElementById('modalTitle').textContent = title;
+    document.getElementById('modalSku').textContent = 'SKU: ' + sku;
+    document.getElementById('imageModal').style.display = 'block';
+    
+    // Prevent body scroll
+    document.body.style.overflow = 'hidden';
+    console.log('Opened modal for SKU:', sku);
+};
+
+// Close image modal
+window.closeImageModal = function() {
+    document.getElementById('imageModal').style.display = 'none';
+    document.body.style.overflow = 'auto';
+    currentModalSku = '';
+    console.log('Closed image modal');
+};
+
+// Approve from modal
+window.approveFromModal = function() {
+    if (currentModalSku) {
+        console.log('Approving from modal:', currentModalSku);
+        approveProduct(currentModalSku);
+        closeImageModal();
+    }
+};
+
+// Decline from modal
+window.declineFromModal = function() {
+    if (currentModalSku) {
+        console.log('Declining from modal:', currentModalSku);
+        declineProduct(currentModalSku);
+        closeImageModal();
+    }
+};
+
+// Initialize modal event handlers when DOM is ready
+document.addEventListener('DOMContentLoaded', function() {
+    // Close modal when clicking outside
+    document.getElementById('imageModal')?.addEventListener('click', function(e) {
+        if (e.target === this) {
+            closeImageModal();
+        }
+    });
+
+    // Close modal with Escape key
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && document.getElementById('imageModal').style.display === 'block') {
+            closeImageModal();
+        }
+    });
+});
+</script>
+
+{% endblock %}
+
+<!-- Image Enlargement Modal -->
+<div id="imageModal" class="modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 1000;">
+    <div class="modal-content" style="position: relative; max-width: 90%; max-height: 90%; margin: 5% auto; background: white; border-radius: 8px; overflow: hidden;">
+        <div class="modal-header" style="padding: 1rem; background: #f8f9fa; border-bottom: 1px solid #e0e0e0; display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <h3 id="modalTitle" style="margin: 0; color: #333;">Product Image</h3>
+                <small id="modalSku" style="color: #666;">SKU: </small>
+            </div>
+            <button onclick="closeImageModal()" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #666;">&times;</button>
+        </div>
+        <div class="modal-body" style="padding: 0; text-align: center; max-height: calc(90vh - 120px); overflow: auto;">
+            <img id="modalImage" src="" alt="" style="max-width: 100%; max-height: 100%; object-fit: contain;">
+        </div>
+        <div class="modal-footer" style="padding: 1rem; background: #f8f9fa; border-top: 1px solid #e0e0e0; text-align: center;">
+            <button class="btn btn-success" onclick="approveFromModal()">Approve</button>
+            <button class="btn btn-danger" onclick="declineFromModal()">Decline</button>
+            <button class="btn" onclick="closeImageModal()">Close</button>
+        </div>
+    </div>
+</div>

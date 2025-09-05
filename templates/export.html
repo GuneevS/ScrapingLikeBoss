@@ -1,0 +1,503 @@
+{% extends "base.html" %}
+
+{% block title %}Export - NWK Image System{% endblock %}
+
+{% block extra_css %}
+<style>
+    .export-options {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2rem;
+        margin-top: 1.5rem;
+    }
+    
+    .export-section {
+        padding: 1.5rem;
+        background: #f8f9fa;
+        border-radius: 8px;
+    }
+    
+    .export-section h3 {
+        margin-bottom: 1rem;
+        color: #2c3e50;
+    }
+    
+    .batch-selector {
+        max-height: 300px;
+        overflow-y: auto;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        padding: 1rem;
+        background: white;
+    }
+    
+    .batch-item {
+        padding: 0.5rem;
+        margin: 0.25rem 0;
+        border-radius: 4px;
+        transition: background 0.2s;
+    }
+    
+    .batch-item:hover {
+        background: #e8f4f8;
+    }
+    
+    .batch-item label {
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+        width: 100%;
+    }
+    
+    .batch-info {
+        margin-left: 1rem;
+        flex: 1;
+    }
+    
+    .batch-meta {
+        font-size: 0.875rem;
+        color: #666;
+    }
+    
+    .export-stats {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1rem;
+        margin: 1rem 0;
+        padding: 1rem;
+        background: white;
+        border-radius: 4px;
+    }
+    
+    .stat-mini {
+        text-align: center;
+        padding: 0.5rem;
+    }
+    
+    .stat-mini-value {
+        font-size: 1.25rem;
+        font-weight: bold;
+        color: #2c3e50;
+    }
+    
+    .stat-mini-label {
+        font-size: 0.75rem;
+        color: #666;
+    }
+    
+    .export-history {
+        margin-top: 2rem;
+    }
+    
+    .export-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 1rem;
+        background: white;
+        border: 1px solid #e0e0e0;
+        border-radius: 4px;
+        margin-bottom: 0.5rem;
+    }
+    
+    .export-item:hover {
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .download-link {
+        color: #3498db;
+        text-decoration: none;
+        font-weight: 500;
+    }
+    
+    .download-link:hover {
+        text-decoration: underline;
+    }
+    
+    .format-selector {
+        display: flex;
+        gap: 1rem;
+        margin: 1rem 0;
+    }
+    
+    .format-option {
+        flex: 1;
+        padding: 1rem;
+        border: 2px solid #ddd;
+        border-radius: 4px;
+        cursor: pointer;
+        text-align: center;
+        transition: all 0.3s;
+    }
+    
+    .format-option:hover {
+        border-color: #3498db;
+        background: #f0f8ff;
+    }
+    
+    .format-option.selected {
+        border-color: #3498db;
+        background: #e8f4f8;
+    }
+    
+    .export-preview {
+        background: #f8f9fa;
+        padding: 1rem;
+        border-radius: 4px;
+        margin-top: 1rem;
+    }
+    
+    .preview-table {
+        width: 100%;
+        font-size: 0.875rem;
+        margin-top: 0.5rem;
+    }
+    
+    .preview-table th {
+        background: #e0e0e0;
+        padding: 0.5rem;
+        text-align: left;
+    }
+    
+    .preview-table td {
+        padding: 0.5rem;
+        border-bottom: 1px solid #e0e0e0;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2>Export Data</h2>
+    </div>
+    
+    <div class="export-options">
+        <div class="export-section">
+            <h3>Select Batches to Export</h3>
+            
+            {% if batches %}
+            <div class="batch-selector">
+                <label style="display: block; margin-bottom: 1rem;">
+                    <input type="checkbox" id="select-all-batches" checked> 
+                    <strong>Select All Batches</strong>
+                </label>
+                
+                {% for batch in batches %}
+                <div class="batch-item">
+                    <label>
+                        <input type="checkbox" class="batch-checkbox" 
+                               value="{{ batch.id }}" 
+                               data-total="{{ batch.total_products }}"
+                               data-approved="{{ batch.approved }}"
+                               checked>
+                        <div class="batch-info">
+                            <strong>{{ batch.filename }}</strong>
+                            <div class="batch-meta">
+                                Imported: {{ batch.imported_at[:16] }}<br>
+                                Products: {{ batch.total_products }} 
+                                ({{ batch.approved }} approved, {{ batch.pending }} pending)
+                            </div>
+                        </div>
+                    </label>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="alert alert-warning">
+                No batches available for export. Please import data first.
+            </div>
+            {% endif %}
+        </div>
+        
+        <div class="export-section">
+            <h3>Export Options</h3>
+            
+            <div class="form-group">
+                <label class="form-label">Image Status Filter</label>
+                <select id="status-filter" class="form-control">
+                    <option value="all">All Products</option>
+                    <option value="approved" selected>Approved Only</option>
+                    <option value="pending">Pending Only</option>
+                    <option value="with_images">With Images Only</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Include Columns</label>
+                <div>
+                    <label>
+                        <input type="checkbox" checked disabled> All Original Excel Columns
+                    </label>
+                </div>
+                <div>
+                    <label>
+                        <input type="checkbox" id="include-paths" checked> Image File Paths
+                    </label>
+                </div>
+                <div>
+                    <label>
+                        <input type="checkbox" id="include-confidence" checked> Confidence Scores
+                    </label>
+                </div>
+                <div>
+                    <label>
+                        <input type="checkbox" id="include-metadata"> Processing Metadata
+                    </label>
+                </div>
+            </div>
+            
+            <div class="export-stats" id="export-stats">
+                <div class="stat-mini">
+                    <div class="stat-mini-value" id="stat-total">0</div>
+                    <div class="stat-mini-label">Total Products</div>
+                </div>
+                <div class="stat-mini">
+                    <div class="stat-mini-value" id="stat-approved">0</div>
+                    <div class="stat-mini-label">Approved</div>
+                </div>
+                <div class="stat-mini">
+                    <div class="stat-mini-value" id="stat-pending">0</div>
+                    <div class="stat-mini-label">Pending</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div style="margin-top: 2rem; text-align: center;">
+        <button class="btn btn-success" style="padding: 1rem 3rem; font-size: 1.1rem;" 
+                onclick="exportData()">
+            Export to Excel
+        </button>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>Quick Export Templates</h2>
+    </div>
+    
+    <div class="format-selector">
+        <div class="format-option" onclick="setExportTemplate('final')">
+            <h4>Final Export</h4>
+            <p>Approved images only with paths</p>
+        </div>
+        <div class="format-option" onclick="setExportTemplate('review')">
+            <h4>Review Export</h4>
+            <p>All products with status</p>
+        </div>
+        <div class="format-option" onclick="setExportTemplate('missing')">
+            <h4>Missing Images</h4>
+            <p>Products without images</p>
+        </div>
+    </div>
+</div>
+
+<div class="card" id="export-result" style="display: none;">
+    <div class="card-header">
+        <h2>Export Complete</h2>
+    </div>
+    
+    <div class="alert alert-success">
+        Your export has been generated successfully!
+    </div>
+    
+    <div style="text-align: center; margin: 2rem 0;">
+        <a id="download-link" href="#" class="btn btn-success" style="padding: 1rem 2rem;">
+            Download Excel File
+        </a>
+    </div>
+    
+    <div class="export-preview">
+        <h4>Export Summary</h4>
+        <table class="preview-table">
+            <tr>
+                <th>Metric</th>
+                <th>Value</th>
+            </tr>
+            <tr>
+                <td>Total Products Exported</td>
+                <td id="export-total">0</td>
+            </tr>
+            <tr>
+                <td>With Approved Images</td>
+                <td id="export-approved">0</td>
+            </tr>
+            <tr>
+                <td>File Size</td>
+                <td id="export-size">0 KB</td>
+            </tr>
+            <tr>
+                <td>Export Time</td>
+                <td id="export-time">-</td>
+            </tr>
+        </table>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>Previous Exports</h2>
+    </div>
+    
+    <div class="export-history" id="export-history">
+        <p>Loading export history...</p>
+    </div>
+</div>
+
+<script>
+// Calculate statistics - ensure available globally
+window.updateExportStats = function() {
+    const checkboxes = document.querySelectorAll('.batch-checkbox:checked');
+    let totalProducts = 0;
+    let approvedProducts = 0;
+    
+    checkboxes.forEach(checkbox => {
+        totalProducts += parseInt(checkbox.dataset.total || 0);
+        approvedProducts += parseInt(checkbox.dataset.approved || 0);
+    });
+    
+    const pendingProducts = totalProducts - approvedProducts;
+    
+    document.getElementById('stat-total').textContent = totalProducts;
+    document.getElementById('stat-approved').textContent = approvedProducts;
+    document.getElementById('stat-pending').textContent = pendingProducts;
+}
+
+// Handle select all batches
+document.getElementById('select-all-batches')?.addEventListener('change', function(e) {
+    document.querySelectorAll('.batch-checkbox').forEach(checkbox => {
+        checkbox.checked = e.target.checked;
+    });
+    updateExportStats();
+});
+
+// Handle individual batch selection
+document.querySelectorAll('.batch-checkbox').forEach(checkbox => {
+    checkbox.addEventListener('change', updateExportStats);
+});
+
+// Set export template - ensure available globally
+window.setExportTemplate = function(template) {
+    // Reset selections
+    document.querySelectorAll('.format-option').forEach(el => {
+        el.classList.remove('selected');
+    });
+    
+    // Mark selected
+    event.currentTarget.classList.add('selected');
+    
+    // Apply template settings
+    switch(template) {
+        case 'final':
+            document.getElementById('status-filter').value = 'approved';
+            document.getElementById('include-paths').checked = true;
+            document.getElementById('include-confidence').checked = false;
+            document.getElementById('include-metadata').checked = false;
+            break;
+            
+        case 'review':
+            document.getElementById('status-filter').value = 'all';
+            document.getElementById('include-paths').checked = true;
+            document.getElementById('include-confidence').checked = true;
+            document.getElementById('include-metadata').checked = true;
+            break;
+            
+        case 'missing':
+            document.getElementById('status-filter').value = 'all';
+            document.getElementById('include-paths').checked = false;
+            document.getElementById('include-confidence').checked = false;
+            document.getElementById('include-metadata').checked = false;
+            // Note: Need to filter for products without images on backend
+            break;
+    }
+}
+
+// Export data - ensure available globally
+window.exportData = async function() {
+    // Safety check - wait for functions to be available
+    if (typeof apiCall !== 'function' || typeof showAlert !== 'function') {
+        alert('Functions not ready yet. Please wait a moment and try again.');
+        return;
+    }
+    
+    const selectedBatches = Array.from(document.querySelectorAll('.batch-checkbox:checked'))
+        .map(cb => parseInt(cb.value));
+    
+    if (selectedBatches.length === 0) {
+        showAlert('Please select at least one batch to export', 'warning');
+        return;
+    }
+    
+    const button = event.target;
+    button.disabled = true;
+    button.textContent = 'Exporting...';
+    
+    try {
+        const startTime = new Date();
+        
+        const result = await apiCall('/api/export', 'POST', {
+            batch_ids: selectedBatches,
+            status_filter: document.getElementById('status-filter').value,
+            include_paths: document.getElementById('include-paths').checked,
+            include_confidence: document.getElementById('include-confidence').checked,
+            include_metadata: document.getElementById('include-metadata')?.checked
+        });
+        
+        const endTime = new Date();
+        const duration = ((endTime - startTime) / 1000).toFixed(1);
+        
+        // Show result
+        document.getElementById('export-result').style.display = 'block';
+        document.getElementById('download-link').href = result.download_url;
+        document.getElementById('export-time').textContent = duration + ' seconds';
+        
+        showAlert('Export completed successfully!', 'success');
+        
+        // Scroll to result
+        document.getElementById('export-result').scrollIntoView({ behavior: 'smooth' });
+        
+        // Load export history
+        loadExportHistory();
+        
+    } catch (error) {
+        showAlert('Export failed: ' + error.message, 'error');
+    } finally {
+        button.disabled = false;
+        button.textContent = 'Export to Excel';
+    }
+}
+
+// Load export history - ensure available globally
+window.loadExportHistory = async function() {
+    const historyDiv = document.getElementById('export-history');
+    
+    // Show static message for now (could be enhanced with a proper API endpoint)
+    try {
+        // Check if exports directory exists by checking for any export files
+        // For now, just show a helpful message
+        historyDiv.innerHTML = `
+            <div class="export-item">
+                <div>
+                    <strong>Export History</strong><br>
+                    <small>Previous exports will appear here after you create them. Files are stored in the exports/ directory.</small>
+                </div>
+            </div>
+        `;
+        
+    } catch (error) {
+        historyDiv.innerHTML = `
+            <div class="alert alert-warning">
+                <strong>Export History</strong><br>
+                Your exported files will be available for download immediately after export completion.
+            </div>
+        `;
+    }
+}
+
+// Initialize
+updateExportStats();
+loadExportHistory();
+</script>
+
+{% endblock %}

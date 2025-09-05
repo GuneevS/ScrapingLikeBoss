@@ -1,0 +1,455 @@
+{% extends "base.html" %}
+
+{% block title %}Management - NWK Image System{% endblock %}
+
+{% block extra_css %}
+<style>
+    .management-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 2rem;
+        margin-top: 2rem;
+    }
+    
+    .action-card {
+        background: white;
+        border-radius: 8px;
+        padding: 1.5rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        border-left: 4px solid #3498db;
+    }
+    
+    .action-card.warning {
+        border-left-color: #f39c12;
+    }
+    
+    .action-card.danger {
+        border-left-color: #e74c3c;
+    }
+    
+    .action-card h3 {
+        margin-bottom: 1rem;
+        color: #2c3e50;
+    }
+    
+    .action-description {
+        color: #666;
+        margin-bottom: 1.5rem;
+        line-height: 1.6;
+    }
+    
+    .protection-notice {
+        background: #e8f5e9;
+        color: #2e7d32;
+        padding: 0.75rem;
+        border-radius: 4px;
+        margin: 1rem 0;
+        font-size: 0.9rem;
+    }
+    
+    .danger-zone {
+        background: #ffebee;
+        border: 2px solid #ef5350;
+        border-radius: 8px;
+        padding: 1.5rem;
+        margin-top: 2rem;
+    }
+    
+    .danger-zone h3 {
+        color: #c62828;
+        margin-bottom: 1rem;
+    }
+    
+    .confirmation-box {
+        display: none;
+        background: white;
+        border: 1px solid #e0e0e0;
+        border-radius: 4px;
+        padding: 1rem;
+        margin-top: 1rem;
+    }
+    
+    .confirmation-box.active {
+        display: block;
+    }
+    
+    .folder-stats {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1rem;
+        margin-bottom: 2rem;
+    }
+    
+    .folder-stat {
+        background: #f8f9fa;
+        padding: 1.5rem;
+        border-radius: 8px;
+        text-align: center;
+    }
+    
+    .folder-stat.approved {
+        background: linear-gradient(135deg, #84fab0 0%, #8fd3f4 100%);
+        color: white;
+    }
+    
+    .folder-stat.pending {
+        background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
+        color: white;
+    }
+    
+    .folder-stat.declined {
+        background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%);
+        color: white;
+    }
+    
+    .folder-count {
+        font-size: 2.5rem;
+        font-weight: bold;
+        margin: 0.5rem 0;
+    }
+    
+    .folder-label {
+        font-size: 1rem;
+        opacity: 0.95;
+    }
+    
+    .log-viewer {
+        background: #1e1e1e;
+        color: #d4d4d4;
+        padding: 1rem;
+        border-radius: 4px;
+        font-family: 'Monaco', 'Menlo', monospace;
+        font-size: 0.875rem;
+        max-height: 300px;
+        overflow-y: auto;
+        margin-top: 1rem;
+    }
+    
+    .log-entry {
+        margin: 0.25rem 0;
+        padding: 0.25rem;
+    }
+    
+    .log-entry.info {
+        color: #4fc3f7;
+    }
+    
+    .log-entry.warning {
+        color: #ffd54f;
+    }
+    
+    .log-entry.error {
+        color: #ef5350;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2>System Management</h2>
+    </div>
+    
+    <div class="folder-stats" id="folder-stats">
+        <div class="folder-stat approved">
+            <div class="folder-label">Approved Images</div>
+            <div class="folder-count" id="approved-count">-</div>
+            <div class="folder-label">Protected</div>
+        </div>
+        
+        <div class="folder-stat pending">
+            <div class="folder-label">Pending Images</div>
+            <div class="folder-count" id="pending-count">-</div>
+            <div class="folder-label">For Review</div>
+        </div>
+        
+        <div class="folder-stat declined">
+            <div class="folder-label">Declined Images</div>
+            <div class="folder-count" id="declined-count">-</div>
+            <div class="folder-label">Can Clear</div>
+        </div>
+    </div>
+    
+    <div class="protection-notice">
+        🛡️ <strong>Protection Active:</strong> Images with confidence >50% are protected from deletion. Approved images are never deleted.
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>Clearing Options</h2>
+    </div>
+    
+    <div class="management-grid">
+        <div class="action-card">
+            <h3>Clear Declined Images</h3>
+            <p class="action-description">
+                Remove all images that have been explicitly declined during review. 
+                This will free up disk space from unwanted product images.
+            </p>
+            <button class="btn btn-warning" onclick="clearImages('declined')">
+                Clear Declined Images
+            </button>
+        </div>
+        
+        <div class="action-card warning">
+            <h3>Clear Low Confidence Pending</h3>
+            <p class="action-description">
+                Remove pending images with confidence scores below 50%. 
+                Higher confidence images are protected and retained for review.
+            </p>
+            <button class="btn btn-warning" onclick="clearImages('low_confidence')">
+                Clear Low Confidence (<50%)
+            </button>
+        </div>
+        
+        <div class="action-card warning">
+            <h3>Clear All Pending</h3>
+            <p class="action-description">
+                Remove all pending images regardless of confidence score. 
+                Approved images remain protected. Use with caution.
+            </p>
+            <button class="btn btn-warning" onclick="clearImages('pending')">
+                Clear All Pending
+            </button>
+        </div>
+    </div>
+</div>
+
+<div class="card danger-zone">
+    <div class="card-header">
+        <h3>⚠️ Danger Zone</h3>
+    </div>
+    
+    <div class="action-card danger">
+        <h3>Full System Reset</h3>
+        <p class="action-description">
+            This will clear ALL data including approved images, database records, and processing history. 
+            This action cannot be undone. Only use this to start completely fresh.
+        </p>
+        
+        <button class="btn btn-danger" onclick="toggleConfirmation('reset-confirm')">
+            Initiate Full Reset
+        </button>
+        
+        <div class="confirmation-box" id="reset-confirm">
+            <p><strong>Type "CONFIRM RESET" to proceed:</strong></p>
+            <input type="text" class="form-control" id="reset-confirmation-input" 
+                   placeholder="CONFIRM RESET" style="margin: 1rem 0;">
+            <button class="btn btn-danger" onclick="performFullReset()">
+                Yes, Delete Everything
+            </button>
+            <button class="btn" onclick="toggleConfirmation('reset-confirm')">
+                Cancel
+            </button>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>System Activity Log</h2>
+    </div>
+    
+    <div class="log-viewer" id="activity-log">
+        <div class="log-entry info">[INFO] System management interface loaded</div>
+        <div class="log-entry info">[INFO] Calculating folder statistics...</div>
+    </div>
+</div>
+
+<script>
+// Load folder statistics - ensure available globally
+window.loadFolderStats = async function() {
+    // Safety check - wait for functions to be available
+    if (typeof apiCall !== 'function') {
+        addLogEntry('warning', 'API functions not yet available, retrying...');
+        setTimeout(loadFolderStats, 1000);
+        return;
+    }
+    
+    try {
+        const stats = await apiCall('/api/stats');
+        
+        document.getElementById('approved-count').textContent = stats.stats.approved || 0;
+        document.getElementById('pending-count').textContent = stats.stats.pending || 0;
+        document.getElementById('declined-count').textContent = stats.stats.declined || 0;
+        
+        addLogEntry('info', `Loaded statistics: ${stats.stats.approved} approved, ${stats.stats.pending} pending, ${stats.stats.declined} declined`);
+        
+    } catch (error) {
+        addLogEntry('error', 'Failed to load folder statistics: ' + error.message);
+    }
+}
+
+// Add log entry - ensure available globally
+window.addLogEntry = function(level, message) {
+    const log = document.getElementById('activity-log');
+    const entry = document.createElement('div');
+    entry.className = `log-entry ${level}`;
+    
+    const timestamp = new Date().toLocaleTimeString();
+    entry.textContent = `[${level.toUpperCase()}] [${timestamp}] ${message}`;
+    
+    log.appendChild(entry);
+    log.scrollTop = log.scrollHeight;
+}
+
+// Toggle confirmation box - ensure available globally
+window.toggleConfirmation = function(id) {
+    const box = document.getElementById(id);
+    box.classList.toggle('active');
+    
+    if (box.classList.contains('active')) {
+        document.getElementById('reset-confirmation-input').value = '';
+        document.getElementById('reset-confirmation-input').focus();
+    }
+}
+
+// Clear images by type - ensure available globally
+window.clearImages = async function(type) {
+    // Safety check - wait for functions to be available
+    if (typeof apiCall !== 'function' || typeof showAlert !== 'function') {
+        alert('Functions not ready yet. Please wait a moment and try again.');
+        return;
+    }
+    let message = '';
+    let confirmProtection = '';
+    
+    switch(type) {
+        case 'declined':
+            message = 'Clear all declined images?';
+            confirmProtection = 'This will only affect explicitly declined images.';
+            break;
+        case 'low_confidence':
+            message = 'Clear pending images with <50% confidence?';
+            confirmProtection = 'Images with >50% confidence will be protected.';
+            break;
+        case 'pending':
+            message = 'Clear ALL pending images?';
+            confirmProtection = 'This includes high-confidence pending images. Approved images remain protected.';
+            break;
+        default:
+            message = 'Clear images?';
+    }
+    
+    if (!confirm(`${message}\n\n${confirmProtection}`)) return;
+    
+    addLogEntry('info', `Initiating clear operation: ${type}`);
+    
+    try {
+        const result = await apiCall('/api/clear', 'POST', {
+            type: type,
+            protect_high_confidence: true
+        });
+        
+        showAlert(result.message, 'success');
+        addLogEntry('info', `Successfully cleared ${result.message}`);
+        
+        // Reload statistics
+        loadFolderStats();
+        
+    } catch (error) {
+        showAlert('Clear operation failed: ' + error.message, 'error');
+        addLogEntry('error', 'Clear operation failed: ' + error.message);
+    }
+}
+
+// Perform full reset - ensure available globally
+window.performFullReset = async function() {
+    // Safety check - wait for functions to be available
+    if (typeof apiCall !== 'function' || typeof showAlert !== 'function') {
+        alert('Functions not ready yet. Please wait a moment and try again.');
+        return;
+    }
+    const confirmText = document.getElementById('reset-confirmation-input').value;
+    
+    if (confirmText !== 'CONFIRM RESET') {
+        showAlert('Please type exactly "CONFIRM RESET" to proceed', 'error');
+        return;
+    }
+    
+    addLogEntry('warning', 'Initiating FULL SYSTEM RESET...');
+    
+    try {
+        const result = await apiCall('/api/clear', 'POST', {
+            type: 'full_reset',
+            confirm: true
+        });
+        
+        showAlert('System has been completely reset', 'success');
+        addLogEntry('warning', 'SYSTEM RESET COMPLETE - All data cleared');
+        
+        // Close confirmation box
+        toggleConfirmation('reset-confirm');
+        
+        // Reload statistics
+        setTimeout(() => {
+            loadFolderStats();
+            window.location.href = '/';
+        }, 2000);
+        
+    } catch (error) {
+        showAlert('Reset failed: ' + error.message, 'error');
+        addLogEntry('error', 'Reset operation failed: ' + error.message);
+    }
+}
+
+// Smart clear with protection - ensure available globally
+window.smartClear = async function() {
+    // Safety check - wait for functions to be available
+    if (typeof apiCall !== 'function') {
+        alert('Functions not ready yet. Please wait a moment and try again.');
+        return;
+    }
+    addLogEntry('info', 'Running smart clear analysis...');
+    
+    try {
+        // Get insights about what would be cleared
+        const insights = await apiCall('/api/stats');
+        const learnings = insights.insights;
+        
+        // Show analysis
+        let analysisMessage = 'Smart Clear Analysis:\n';
+        analysisMessage += `- ${learnings.high_confidence_pending || 0} high confidence images protected\n`;
+        analysisMessage += `- ${learnings.low_confidence_count || 0} low confidence images can be cleared\n`;
+        analysisMessage += `- Space to be freed: ~${estimateSize(learnings.low_confidence_count)} MB`;
+        
+        if (confirm(analysisMessage + '\n\nProceed with smart clear?')) {
+            await clearImages('low_confidence');
+        }
+        
+    } catch (error) {
+        addLogEntry('error', 'Smart clear analysis failed: ' + error.message);
+    }
+}
+
+// Estimate size - ensure available globally
+window.estimateSize = function(count) {
+    // Rough estimate: 100KB per image
+    return ((count * 100) / 1024).toFixed(1);
+}
+
+// Initialize when DOM and functions are ready
+document.addEventListener('DOMContentLoaded', function() {
+    // Wait for functions to be available before initializing
+    const initializeManagement = function() {
+        if (typeof apiCall === 'function') {
+            console.log('Management functions available, initializing...');
+            addLogEntry('info', 'Management interface initialized');
+            
+            // Load initial statistics
+            loadFolderStats();
+            
+            // Auto-refresh stats every 30 seconds
+            setInterval(loadFolderStats, 30000);
+        } else {
+            // Retry in 100ms if functions not available yet
+            setTimeout(initializeManagement, 100);
+        }
+    };
+    
+    initializeManagement();
+});
+</script>
+
+{% endblock %}

@@ -1,0 +1,16 @@
+search:
+  provider: serpapi
+  serp_api_key: "${SERP_API_KEY}"
+  max_results: 5
+  query_template: "{barcode} packshot"
+network:
+  concurrency: 10
+  timeout: 15
+output:
+  base_dir: "output"
+image:
+  size: 1000
+  max_kb: 200
+  format: "jpg"
+logging:
+  level: "INFO"

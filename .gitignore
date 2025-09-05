@@ -1,0 +1,164 @@
+# Image Management System - .gitignore
+
+# Image files and output directories
+output/
+exports/
+uploads/
+
+# Image files by extension
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.webp
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+nwk_images.db
+
+# Excel files (product data)
+*.xlsx
+*.xls
+*.csv
+NWK_ProductList*.xlsx
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Windows system files
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux system files
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.bak
+*.orig
+*.rej
+
+# Test and development files
+test_*.py
+debug_*.py
+temp_*.py
+
+# Configuration with secrets (keep example files)
+.env
+config_local.yaml
+
+# Runtime files
+*.pid
+*.lock
+
+# Documentation build files
+docs/_build/
+docs/build/
+
+# Backup files
+*.backup
+*_backup*
+*.old
+
+# API keys and secrets
+api_keys.txt
+secrets.txt
+credentials.json
+
+# Large data files
+*.json.gz
+*.csv.gz
+*.zip
+*.tar.gz
+*.rar
+
+# Cache directories
+.cache/
+cache/
+tmp/
+temp/
+
+# Learning system data files
+learning_patterns.json
+learning_cache/
+
+# Generated reports
+*_report.json
+*_summary.md
+bug_sweep_report.json
+
+# Flask session files
+flask_session/
+
+# SQLite journal files
+*.db-journal
+*.db-wal
+*.db-shm
+

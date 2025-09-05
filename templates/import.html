@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+
+{% block title %}Import - NWK Image System{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2>Import Excel File</h2>
+    </div>
+    
+    <form id="import-form" enctype="multipart/form-data">
+        <div class="form-group">
+            <label class="form-label">Select Excel File (.xlsx)</label>
+            <input type="file" id="file-input" class="form-control" accept=".xlsx" required>
+        </div>
+        
+        <div id="file-info" style="display: none;" class="alert alert-warning">
+            <strong>File Selected:</strong> <span id="filename"></span><br>
+            <strong>Size:</strong> <span id="filesize"></span>
+        </div>
+        
+        <div class="form-group">
+            <label class="form-label">Processing Options</label>
+            <div>
+                <label>
+                    <input type="radio" name="process-mode" value="test" checked>
+                    Test Mode (Process first 10 products after import)
+                </label>
+            </div>
+            <div>
+                <label>
+                    <input type="radio" name="process-mode" value="none">
+                    Import Only (Do not process yet)
+                </label>
+            </div>
+        </div>
+        
+        <button type="submit" class="btn btn-success">Import Excel</button>
+    </form>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>Previous Imports</h2>
+    </div>
+    
+    {% if batches %}
+    <table style="width: 100%; border-collapse: collapse;">
+        <thead>
+            <tr style="border-bottom: 2px solid #ddd;">
+                <th style="padding: 0.75rem; text-align: left;">Batch ID</th>
+                <th style="padding: 0.75rem; text-align: left;">Filename</th>
+                <th style="padding: 0.75rem; text-align: left;">Imported</th>
+                <th style="padding: 0.75rem; text-align: center;">Total</th>
+                <th style="padding: 0.75rem; text-align: center;">Approved</th>
+                <th style="padding: 0.75rem; text-align: center;">Pending</th>
+                <th style="padding: 0.75rem; text-align: center;">Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for batch in batches %}
+            <tr style="border-bottom: 1px solid #eee;">
+                <td style="padding: 0.75rem;">{{ batch.id }}</td>
+                <td style="padding: 0.75rem;">{{ batch.filename }}</td>
+                <td style="padding: 0.75rem;">{{ batch.imported_at[:16] }}</td>
+                <td style="padding: 0.75rem; text-align: center;">{{ batch.total_products }}</td>
+                <td style="padding: 0.75rem; text-align: center;">{{ batch.approved }}</td>
+                <td style="padding: 0.75rem; text-align: center;">{{ batch.pending }}</td>
+                <td style="padding: 0.75rem; text-align: center;">
+                    <span class="confidence-badge confidence-{{ 'high' if batch.status == 'active' else 'low' }}">
+                        {{ batch.status }}
+                    </span>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No previous imports found.</p>
+    {% endif %}
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>Important Notes</h2>
+    </div>
+    
+    <ul>
+        <li><strong>All Excel columns are preserved</strong> - The system imports all 18 columns from your Excel file</li>
+        <li><strong>Duplicate detection</strong> - Products already in the database will not be duplicated</li>
+        <li><strong>Brand preservation</strong> - Brand names like "Good 'n Gold" are kept exactly as provided</li>
+        <li><strong>Local search first</strong> - The system checks approved images locally before searching online</li>
+        <li><strong>Intelligent caching</strong> - Successful searches are cached to avoid repeated API calls</li>
+    </ul>
+</div>
+
+<script>
+document.getElementById('file-input').addEventListener('change', function(e) {
+    const file = e.target.files[0];
+    if (file) {
+        document.getElementById('file-info').style.display = 'block';
+        document.getElementById('filename').textContent = file.name;
+        document.getElementById('filesize').textContent = (file.size / 1024 / 1024).toFixed(2) + ' MB';
+    }
+});
+
+document.getElementById('import-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    
+    const fileInput = document.getElementById('file-input');
+    const file = fileInput.files[0];
+    
+    if (!file) {
+        showAlert('Please select a file', 'error');
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    try {
+        // Show loading
+        const submitButton = e.target.querySelector('button[type="submit"]');
+        submitButton.disabled = true;
+        submitButton.textContent = 'Importing...';
+        
+        const response = await fetch('/api/import', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            showAlert(`Successfully imported ${result.imported_count} products!`, 'success');
+            
+            // Check if we should start processing
+            const processMode = document.querySelector('input[name="process-mode"]:checked').value;
+            
+            if (processMode === 'test') {
+                // Start processing first 10
+                setTimeout(async () => {
+                    try {
+                        await apiCall('/api/process', 'POST', { 
+                            limit: 10,
+                            batch_id: result.batch_id
+                        });
+                        showAlert('Started processing first 10 products', 'success');
+                        
+                        // Redirect to dashboard to see progress
+                        setTimeout(() => {
+                            window.location.href = '/';
+                        }, 1000);
+                        
+                    } catch (error) {
+                        showAlert('Import successful but failed to start processing: ' + error.message, 'warning');
+                    }
+                }, 1000);
+            } else {
+                // Just reload to show new batch
+                setTimeout(() => location.reload(), 1500);
+            }
+            
+        } else {
+            showAlert('Import failed: ' + result.error, 'error');
+        }
+        
+    } catch (error) {
+        showAlert('Import failed: ' + error.message, 'error');
+        
+    } finally {
+        const submitButton = e.target.querySelector('button[type="submit"]');
+        submitButton.disabled = false;
+        submitButton.textContent = 'Import Excel';
+    }
+});
+</script>
+
+{% endblock %}
