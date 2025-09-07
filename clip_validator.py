@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class CLIPValidator:
     """Semantic image validation using CLIP model"""
     
-    def __init__(self, config: dict = None, db_path: str = "nwk_images.db"):
+    def __init__(self, config: dict = None, db_path: str = "data/products.db"):
         """
         Initialize CLIP validator with OCR and quality assessment
         
