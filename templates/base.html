@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}NWK Image Management System{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/export.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/products.css') }}">
     <style>
         * {
             margin: 0;
@@ -324,6 +327,7 @@
     <nav class="nav">
         <ul>
             <li><a href="{{ url_for('index') }}" class="{% if request.endpoint == 'index' %}active{% endif %}">Dashboard</a></li>
+            <li><a href="{{ url_for('products_page') }}" class="{% if request.endpoint == 'products_page' %}active{% endif %}">Products</a></li>
             <li><a href="{{ url_for('import_page') }}" class="{% if request.endpoint == 'import_page' %}active{% endif %}">Import</a></li>
             <li><a href="{{ url_for('review_page') }}" class="{% if request.endpoint == 'review_page' %}active{% endif %}">Review</a></li>
             <li><a href="{{ url_for('export_page') }}" class="{% if request.endpoint == 'export_page' %}active{% endif %}">Export</a></li>

@@ -8,6 +8,31 @@
         <h2>System Overview</h2>
     </div>
     
+    <div class="dashboard-grid">
+        <div class="action-card">
+            <h3>Process Images</h3>
+            <p>Process custom batch size</p>
+            <input type="number" id="batch-size" placeholder="Batch size" value="10" min="1" max="100">
+            <button onclick="processCustomBatch()">Start Processing</button>
+        </div>
+        
+        <div class="action-card">
+            <h3>Process All</h3>
+            <button class="btn btn-success process-all-btn" onclick="processAllImages()">
+                Process All ({{ stats.not_processed }} remaining)
+            </button>
+            <p class="card-description">Process all remaining images</p>
+        </div>
+        
+        <div class="action-card">
+            <h3>Validate Images</h3>
+            <button class="btn btn-warning validate-all-btn" onclick="validateImages()">
+                Run CLIP Validation
+            </button>
+            <p class="card-description">AI quality assurance check</p>
+        </div>
+    </div>
+    
     <div class="stats-grid">
         <div class="stat-card">
             <div>Total Products</div>
@@ -41,7 +66,7 @@
     </div>
     
     <div class="progress-bar">
-        <div class="progress-fill" style="width: {{ stats.completion_percentage }}%">
+        <div class="progress-fill" data-width="{{ stats.completion_percentage }}" id="main-progress">
             {{ "%.1f"|format(stats.completion_percentage) }}% Complete
         </div>
     </div>
@@ -59,11 +84,11 @@
         <h2>Quick Actions</h2>
     </div>
     
-    <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+    <div class="quick-actions">
         <a href="{{ url_for('import_page') }}" class="btn">Import New Excel</a>
         
         {% if stats.not_processed > 0 %}
-        <button class="btn btn-success" onclick="startProcessing()">
+        <button class="btn btn-success" onclick="processImages()">
             Process {{ stats.not_processed if stats.not_processed < 10 else 10 }} Products
         </button>
         {% endif %}
@@ -78,14 +103,23 @@
     </div>
 </div>
 
-<div class="card" id="processing-status" style="display: none;">
+<div class="card">
+    <div class="card-header">
+        <h2>CLIP Validation Summary</h2>
+    </div>
+    <div id="clip-summary">
+        <p>Loading validation data...</p>
+    </div>
+</div>
+
+<div class="card processing-status-hidden" id="processing-status">
     <div class="card-header">
         <h2>Processing Status</h2>
     </div>
     
     <div id="processing-info">
         <div class="progress-bar">
-            <div class="progress-fill" id="processing-progress" style="width: 0%">
+            <div class="progress-fill" id="processing-progress" data-width="0">
                 0%
             </div>
         </div>
@@ -104,26 +138,95 @@
 </div>
 
 <script>
-// Start processing - ensure available globally
-window.startProcessing = async function() {
-    // Safety check - wait for functions to be available
-    if (typeof apiCall !== 'function' || typeof showAlert !== 'function') {
+// Process custom batch
+window.processCustomBatch = async function() {
+    if (typeof apiCall !== 'function' || typeof showAlert !== 'function' || typeof confirmAction !== 'function') {
         alert('Functions not ready yet. Please wait a moment and try again.');
         return;
     }
     
-    if (!confirm('Start processing the next 10 products?')) return;
+    const batchSize = parseInt(document.getElementById('batch-size').value) || 10;
     
-    try {
-        const result = await apiCall('/api/process', 'POST', { limit: 10 });
-        showAlert('Processing started!', 'success');
-        
-        document.getElementById('processing-status').style.display = 'block';
-        checkProgress();
-        
-    } catch (error) {
-        showAlert('Failed to start processing: ' + error.message, 'error');
+    if (batchSize < 1 || batchSize > 100) {
+        showAlert('Batch size must be between 1 and 100', 'error');
+        return;
     }
+    
+    confirmAction(`Process ${batchSize} products?`, async () => {
+        try {
+            const result = await apiCall('/api/process', 'POST', { 
+                batch_size: batchSize  // Use correct parameter name
+            });
+            
+            if (result.success) {
+                showAlert(`Processing ${batchSize} products started!`, 'success');
+                document.getElementById('processing-status').style.display = 'block';
+                checkProgress();
+            } else {
+                showAlert(result.message || 'Failed to start processing', 'error');
+            }
+        } catch (error) {
+            showAlert('Failed to start processing: ' + error.message, 'error');
+        }
+    });
+}
+
+// Validate images with CLIP
+window.validateImages = async function() {
+    if (typeof apiCall !== 'function' || typeof showAlert !== 'function' || typeof confirmAction !== 'function') {
+        alert('Functions not ready yet. Please wait a moment and try again.');
+        return;
+    }
+    
+    confirmAction('Run CLIP validation on all pending images?', async () => {
+        try {
+            const result = await apiCall('/api/validate-images', 'POST', {
+                mode: 'pending'  // Validate only pending images
+            });
+            
+            if (result.success) {
+                showAlert(`CLIP validation completed! Validated ${result.count} images`, 'success');
+                // Refresh the validation summary
+                loadValidationSummary();
+            } else {
+                showAlert(result.message || 'Validation failed', 'error');
+            }
+        } catch (error) {
+            showAlert('Validation failed: ' + error.message, 'error');
+        }
+    }, {
+        title: 'CLIP Validation',
+        confirmText: 'Start Validation'
+    });
+}
+
+// Process all remaining products
+window.processAll = async function() {
+    if (typeof apiCall !== 'function' || typeof showAlert !== 'function' || typeof confirmAction !== 'function') {
+        alert('Functions not ready yet. Please wait a moment and try again.');
+        return;
+    }
+    
+    confirmAction('Process ALL remaining products? This may take a long time.', async () => {
+        try {
+            const result = await apiCall('/api/process', 'POST', { 
+                batch_size: 9999  // Large number to process all
+            });
+            
+            if (result.success) {
+                showAlert('Processing all products started!', 'success');
+                document.getElementById('processing-status').style.display = 'block';
+                checkProgress();
+            } else {
+                showAlert(result.message || 'Failed to start processing', 'error');
+            }
+        } catch (error) {
+            showAlert('Failed to start processing: ' + error.message, 'error');
+        }
+    }, {
+        title: 'Process All Products',
+        confirmText: 'Process All'
+    });
 }
 
 // Check progress - ensure available globally
@@ -132,19 +235,18 @@ window.checkProgress = async function() {
         const state = await apiCall('/api/progress');
         
         if (state.is_running) {
-            const progress = state.progress;
-            const percentage = (progress.current / progress.total * 100).toFixed(0);
+            const percentage = state.progress || 0;
             
             document.getElementById('processing-progress').style.width = percentage + '%';
             document.getElementById('processing-progress').textContent = percentage + '%';
-            document.getElementById('processing-message').textContent = 
-                `Processing ${progress.current} of ${progress.total}: ${progress.product || 'Unknown'}`;
+            document.getElementById('processing-message').textContent = state.message || 'Processing...';
             
             // Check again in 1 second
             setTimeout(checkProgress, 1000);
             
         } else {
-            document.getElementById('processing-message').textContent = 'Processing complete!';
+            document.getElementById('processing-message').textContent = state.message || 'Processing complete!';
+            document.getElementById('processing-status').style.display = 'none';
             
             // Reload stats
             setTimeout(() => location.reload(), 2000);
@@ -176,6 +278,12 @@ window.checkSystemHealth = async function() {
 
 // Initialize when DOM and functions are ready
 document.addEventListener('DOMContentLoaded', function() {
+    // Set progress bar width from data attribute
+    const mainProgress = document.getElementById('main-progress');
+    if (mainProgress) {
+        const width = mainProgress.getAttribute('data-width');
+        mainProgress.style.width = width + '%';
+    }
     // Wait for functions to be available before initializing
     const initializeDashboard = function() {
         if (typeof apiCall === 'function') {
@@ -199,7 +307,173 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     };
     
+    let processing = false;
+    
+    // Make functions globally available
+    window.processImages = async () => {
+        // Safety check - wait for functions to be available
+        if (typeof apiCall !== 'function' || typeof showAlert !== 'function') {
+            alert('Functions not ready yet. Please wait a moment and try again.');
+            return;
+        }
+        
+        const button = event.target;
+        
+        confirmAction('Start processing the next 10 products?', async () => {
+            setButtonLoading(button, true);
+            
+            try {
+                const result = await apiCall('/api/process', 'POST', { batch_size: 10 });
+                showAlert('Processing started successfully!', 'success');
+                
+                document.getElementById('processing-status').style.display = 'block';
+                checkProgress();
+                
+            } catch (error) {
+                showAlert('Failed to start processing: ' + error.message, 'error');
+                setButtonLoading(button, false);
+            }
+        }, {
+            title: 'Start Batch Processing',
+            confirmText: 'Start Processing'
+        });
+    };
+    
+    window.processAllImages = async () => {
+        if (processing) {
+            alert('Already processing images');
+            return;
+        }
+        
+        const button = document.querySelector('.validate-all-btn');
+        
+        confirmAction('Process all remaining images? This may take a while.', async () => {
+            if (processing) {
+                showAlert('Already processing images', 'warning');
+                return;
+            }
+            
+            processing = true;
+            setButtonLoading(button, true);
+            document.getElementById('processing-status').style.display = 'block';
+            checkProgress();
+            
+            try {
+                const response = await fetch('/api/process-all', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'}
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showAlert(`Processing complete! Processed ${data.processed} images`, 'success');
+                    await loadStats();
+                } else {
+                    showAlert('Error: ' + data.error, 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            } finally {
+                processing = false;
+                setButtonLoading(button, false);
+                document.getElementById('processing-status').style.display = 'none';
+            }
+        }, {
+            title: 'Process All Images',
+            confirmText: 'Process All'
+        });
+    };
+    
+    window.validateImages = async () => {
+        const button = event.target;
+        
+        confirmAction('Run CLIP validation on all images? This may take time.', async () => {
+            setButtonLoading(button, true);
+            showAlert('Starting CLIP validation...', 'info', 3000);
+            
+            try {
+                const result = await apiCall('/api/validate-images', 'POST', { validate_all: true });
+                showAlert('CLIP validation completed successfully!', 'success');
+                
+                // Reload the page to see updated stats
+                setTimeout(() => {
+                    location.reload();
+                }, 2000);
+                
+            } catch (error) {
+                showAlert('Validation failed: ' + error.message, 'error');
+                setButtonLoading(button, false);
+            }
+        }, {
+            title: 'CLIP Validation',
+            confirmText: 'Validate All'
+        });
+    };
+    
+    window.updateUI = () => {
+        // Update UI state based on processing status
+        const buttons = document.querySelectorAll('button, .action-button');
+        buttons.forEach(btn => {
+            if (processing) {
+                btn.style.opacity = '0.5';
+                btn.style.pointerEvents = 'none';
+            } else {
+                btn.style.opacity = '1';
+                btn.style.pointerEvents = 'auto';
+            }
+        });
+    };
+    
+    // Load CLIP validation summary
+    const loadClipSummary = async () => {
+        try {
+            const response = await fetch('/api/validation-summary');
+            const data = await response.json();
+            
+            let html = '';
+            if (data.stats) {
+                html = `
+                    <div class="clip-summary-grid">
+                        <div class="clip-stat">
+                            <div class="clip-stat-number approved">${data.stats.auto_approved || 0}</div>
+                            <div>Auto Approved</div>
+                        </div>
+                        <div class="clip-stat">
+                            <div class="clip-stat-number review">${data.stats.needs_review || 0}</div>
+                            <div>Need Review</div>
+                        </div>
+                        <div class="clip-stat">
+                            <div class="clip-stat-number rejected">${data.stats.auto_rejected || 0}</div>
+                            <div>Auto Rejected</div>
+                        </div>
+                        <div class="clip-stat">
+                            <div class="clip-stat-number validated">${data.stats.validated || 0}</div>
+                            <div>Total Validated</div>
+                        </div>
+                    </div>
+                `;
+                
+                if (data.recent && data.recent.length > 0) {
+                    html += '<h4>Recent Validations:</h4><ul>';
+                    data.recent.forEach(item => {
+                        const icon = item.action === 'auto_approve' ? '✅' : 
+                                    item.action === 'manual_review' ? '⚠️' : '❌';
+                        html += `<li>${icon} ${item.sku}: ${item.title} (${Math.round(item.confidence * 100)}%)</li>`;
+                    });
+                    html += '</ul>';
+                }
+            } else {
+                html = '<p>No validations performed yet. Click "Validate Images" to start.</p>';
+            }
+            
+            document.getElementById('clip-summary').innerHTML = html;
+        } catch (error) {
+            console.error('Failed to load CLIP summary:', error);
+        }
+    };
+    
     initializeDashboard();
+    loadClipSummary();
 });
 </script>
 

@@ -178,7 +178,7 @@
             
             {% if batches %}
             <div class="batch-selector">
-                <label style="display: block; margin-bottom: 1rem;">
+                <label class="select-all-label">
                     <input type="checkbox" id="select-all-batches" checked> 
                     <strong>Select All Batches</strong>
                 </label>
@@ -214,8 +214,8 @@
             <h3>Export Options</h3>
             
             <div class="form-group">
-                <label class="form-label">Image Status Filter</label>
-                <select id="status-filter" class="form-control">
+                <label for="status-filter" class="form-label">Image Status Filter</label>
+                <select id="status-filter" class="form-control" title="Filter products by image status">
                     <option value="all">All Products</option>
                     <option value="approved" selected>Approved Only</option>
                     <option value="pending">Pending Only</option>
@@ -264,9 +264,8 @@
         </div>
     </div>
     
-    <div style="margin-top: 2rem; text-align: center;">
-        <button class="btn btn-success" style="padding: 1rem 3rem; font-size: 1.1rem;" 
-                onclick="exportData()">
+    <div class="export-actions">
+        <button class="btn btn-success export-btn" onclick="exportData()">
             Export to Excel
         </button>
     </div>
@@ -293,7 +292,7 @@
     </div>
 </div>
 
-<div class="card" id="export-result" style="display: none;">
+<div class="card export-result-hidden" id="export-result">
     <div class="card-header">
         <h2>Export Complete</h2>
     </div>
@@ -302,8 +301,8 @@
         Your export has been generated successfully!
     </div>
     
-    <div style="text-align: center; margin: 2rem 0;">
-        <a id="download-link" href="#" class="btn btn-success" style="padding: 1rem 2rem;">
+    <div class="download-section">
+        <a id="download-link" href="#" class="btn btn-success download-btn">
             Download Excel File
         </a>
     </div>
@@ -421,13 +420,12 @@ window.exportData = async function() {
         return;
     }
     
+    // Don't require batch selection - export all if no batches selected
     const selectedBatches = Array.from(document.querySelectorAll('.batch-checkbox:checked'))
         .map(cb => parseInt(cb.value));
     
-    if (selectedBatches.length === 0) {
-        showAlert('Please select at least one batch to export', 'warning');
-        return;
-    }
+    // If no batches selected, export all products based on filter
+    // Empty array means export all products matching the status filter
     
     const button = event.target;
     button.disabled = true;

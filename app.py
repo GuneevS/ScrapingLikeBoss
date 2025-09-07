@@ -15,6 +15,8 @@ import threading
 import queue
 from werkzeug.utils import secure_filename
 import yaml
+import sqlite3
+import pandas as pd
 
 from database import ImageDatabase
 from image_processor import IntelligentImageProcessor
@@ -29,8 +31,8 @@ app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
 # Create upload folder
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# Initialize database
-db = ImageDatabase()
+# Initialize database - use correct path
+db = ImageDatabase('data/products.db')
 
 # Initialize learning system
 learning = LearningSystem()
@@ -72,9 +74,11 @@ processor = IntelligentImageProcessor(config, db)
 
 # Processing state
 processing_state = {
+    'active': False,
     'is_running': False,
     'current_batch': None,
-    'progress': {},
+    'progress': 0,
+    'message': 'Ready',
     'results': {}
 }
 
@@ -142,58 +146,133 @@ def import_excel():
 def start_processing():
     """Start processing products"""
     
-    if processing_state['is_running']:
-        return jsonify({'error': 'Processing already in progress'}), 400
+    # Check if already processing
+    global processing_state
+    if processing_state['active']:
+        return jsonify({'error': 'Already processing'}), 400
     
-    data = request.json
-    limit = data.get('limit', 10)
-    batch_id = data.get('batch_id')
+    # Get batch size from request
+    data = request.json or {}
+    batch_size = data.get('batch_size', 10)
+    batch_size = min(max(1, int(batch_size)), 100)  # Limit between 1-100
     
-    # Get unprocessed products
-    products = db.get_unprocessed_products(limit)
+    logger.info(f"Starting processing with batch_size: {batch_size}")
     
-    if not products:
-        return jsonify({'error': 'No unprocessed products found'}), 404
-    
-    # Start processing in background
+    processing_state['active'] = True
     processing_state['is_running'] = True
-    processing_state['current_batch'] = batch_id
-    processing_state['progress'] = {
-        'current': 0,
-        'total': len(products),
-        'status': 'starting'
-    }
+    processing_state['progress'] = 0
+    processing_state['message'] = f'Starting processing {batch_size} products...'
     
-    def process_thread():
+    # Start processing in background thread
+    def process_batch():
         try:
-            # Create event loop for async processing
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            logger.info(f"Thread started for processing {batch_size} products")
             
-            def progress_callback(progress):
-                processing_state['progress'].update(progress)
+            # Get unprocessed products
+            products = db.get_unprocessed_products(limit=batch_size)
+            logger.info(f"Found {len(products) if products else 0} unprocessed products")
             
-            # Process products
-            results = loop.run_until_complete(
-                processor.process_batch(products, progress_callback)
+            if not products:
+                processing_state['message'] = 'No products to process'
+                processing_state['progress'] = 100
+                logger.warning("No unprocessed products found")
+                return
+            
+            # Log product SKUs being processed
+            skus = [p.get('Variant_SKU', 'Unknown') for p in products]
+            logger.info(f"Processing SKUs: {skus}")
+            
+            # Process the batch
+            def progress_callback(current, total, message):
+                processing_state['progress'] = int((current / total) * 100)
+                processing_state['message'] = message
+                logger.info(f"Progress: {current}/{total} - {message}")
+            
+            results = processor.process_batch(products, progress_callback)
+            
+            logger.info(f"Processing complete: {results}")
+            processing_state['message'] = f"Completed: {results['success']} successful, {results['failed']} failed"
+            processing_state['progress'] = 100
+            
+        except Exception as e:
+            logger.error(f"Processing error: {str(e)}", exc_info=True)
+            processing_state['message'] = f"Error: {str(e)}"
+        finally:
+            processing_state['active'] = False
+            processing_state['is_running'] = False
+            logger.info("Processing thread finished")
+    
+    thread = threading.Thread(target=process_batch)
+    thread.daemon = True  # Make thread daemon so it doesn't block shutdown
+    thread.start()
+    
+    return jsonify({'success': True, 'message': f'Processing {batch_size} products', 'processed': batch_size})
+
+@app.route('/api/process-all', methods=['POST'])
+def process_all_images():
+    """Process ALL remaining unprocessed images"""
+    
+    # Check if already processing
+    global processing_state
+    if processing_state['active']:
+        return jsonify({'error': 'Already processing'}), 400
+    
+    processing_state['active'] = True
+    processing_state['progress'] = 0
+    processing_state['message'] = 'Starting to process all remaining products...'
+    
+    # Start processing in background thread
+    def process_all():
+        try:
+            # Get ALL unprocessed products
+            cursor = db.conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM products WHERE image_status = 'not_processed' OR image_status IS NULL"
             )
+            total_remaining = cursor.fetchone()[0]
+            cursor.close()
             
-            processing_state['results'] = results
-            processing_state['progress']['status'] = 'completed'
+            if total_remaining == 0:
+                processing_state['message'] = 'No products to process'
+                processing_state['progress'] = 100
+                return
+            
+            processing_state['message'] = f'Processing {total_remaining} products...'
+            
+            # Process in batches of 50 to avoid memory issues
+            batch_size = 50
+            processed_total = 0
+            
+            while True:
+                products = db.get_unprocessed_products(limit=batch_size)
+                if not products:
+                    break
+                
+                # Process this batch
+                def progress_callback(current, total, message):
+                    overall_progress = int(((processed_total + current) / total_remaining) * 100)
+                    processing_state['progress'] = overall_progress
+                    processing_state['message'] = f"Processing {processed_total + current}/{total_remaining}: {message}"
+                
+                results = processor.process_batch(products, progress_callback)
+                processed_total += results['success'] + results['failed']
+                
+                # Update overall progress
+                processing_state['progress'] = int((processed_total / total_remaining) * 100)
+            
+            processing_state['message'] = f"Completed processing {processed_total} products"
+            processing_state['progress'] = 100
             
         except Exception as e:
             logger.error(f"Processing error: {str(e)}")
-            processing_state['progress']['status'] = 'error'
-            processing_state['progress']['error'] = str(e)
+            processing_state['message'] = f"Error: {str(e)}"
         finally:
-            processing_state['is_running'] = False
-            loop.close()
+            processing_state['active'] = False
     
-    thread = threading.Thread(target=process_thread)
-    thread.daemon = True
+    thread = threading.Thread(target=process_all)
     thread.start()
     
-    return jsonify({'success': True, 'message': f'Started processing {len(products)} products'})
+    return jsonify({'success': True, 'message': 'Processing all remaining products', 'processed': 'all'})
 
 @app.route('/api/progress')
 def get_progress():
@@ -219,7 +298,7 @@ def review_page():
     
     return render_template('review.html', products=pending)
 
-@app.route('/api/approve/<sku>')
+@app.route('/api/approve/<sku>', methods=['POST'])
 def approve_product(sku):
     """Approve a product image"""
     
@@ -241,7 +320,7 @@ def approve_product(sku):
     else:
         return jsonify({'error': 'Failed to approve image'}), 500
 
-@app.route('/api/decline/<sku>')
+@app.route('/api/decline/<sku>', methods=['POST'])
 def decline_product(sku):
     """Decline a product image"""
     
@@ -259,6 +338,39 @@ def decline_product(sku):
         return jsonify({'success': True, 'message': 'Image declined'})
     else:
         return jsonify({'error': 'Failed to decline image'}), 500
+
+@app.route('/api/unapprove/<sku>', methods=['POST'])
+def unapprove_product(sku):
+    """Unapprove a previously approved product image"""
+    
+    # Get product details
+    product = db.get_product_by_sku(sku)
+    if not product:
+        return jsonify({'error': 'Product not found'}), 404
+    
+    # Move from approved to pending
+    success = processor.move_to_pending(sku)
+    
+    if success:
+        # Update database status
+        cursor = db.conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE products SET 
+                    image_status = 'pending'
+                WHERE Variant_SKU = ?
+            ''', (sku,))
+            db.conn.commit()
+            
+            return jsonify({'success': True, 'message': 'Image moved to pending'})
+        except Exception as e:
+            db.conn.rollback()
+            logger.error(f"Error unapproving {sku}: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+        finally:
+            cursor.close()
+    else:
+        return jsonify({'error': 'Failed to unapprove image'}), 500
 
 @app.route('/api/bulk-action', methods=['POST'])
 def bulk_action():
@@ -313,7 +425,7 @@ def clear_images():
 
 @app.route('/image/<sku>')
 def serve_image(sku):
-    """Serve product image with better error handling"""
+    """Serve product image with comprehensive error handling and path repair"""
     
     try:
         product = db.get_product_by_sku(sku)
@@ -327,12 +439,57 @@ def serve_image(sku):
             logger.warning(f"No image path for SKU: {sku}")
             return '', 404
         
-        if not os.path.exists(image_path):
-            logger.warning(f"Image file not found: {image_path} for SKU: {sku}")
-            return '', 404
+        # Check if file exists at recorded path
+        if os.path.exists(image_path):
+            logger.debug(f"Serving image: {image_path} for SKU: {sku}")
+            return send_file(image_path)
         
-        logger.debug(f"Serving image: {image_path} for SKU: {sku}")
-        return send_file(image_path)
+        # If file doesn't exist, try to repair path by searching for it
+        logger.warning(f"Image file not found at {image_path}, attempting repair for SKU: {sku}")
+        
+        # Search for image in all possible locations
+        safe_sku = processor.sanitize_filename(sku)
+        brand = product.get('Brand', 'Unknown')
+        safe_brand = processor.sanitize_filename(brand) if brand else 'Unknown'
+        
+        search_dirs = [
+            f"output/approved/{safe_brand}",
+            f"output/pending/{safe_brand}", 
+            f"output/declined/{safe_brand}",
+            "output/approved",
+            "output/pending",
+            "output/declined"
+        ]
+        
+        for search_dir in search_dirs:
+            if os.path.exists(search_dir):
+                for file in os.listdir(search_dir):
+                    if safe_sku in file and file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        found_path = os.path.join(search_dir, file)
+                        logger.info(f"Found image at repaired path: {found_path} for SKU: {sku}")
+                        
+                        # Update database with correct path
+                        cursor = db.conn.cursor()
+                        try:
+                            cursor.execute(
+                                'UPDATE products SET downloaded_image_path = ? WHERE Variant_SKU = ?',
+                                (found_path, sku)
+                            )
+                            db.conn.commit()
+                            logger.info(f"Updated image path in database for SKU: {sku}")
+                        finally:
+                            cursor.close()
+                        
+                        return send_file(found_path)
+        
+        # If still not found, log comprehensive debugging info
+        logger.error(f"Image completely missing for SKU: {sku}")
+        logger.error(f"  - Expected path: {image_path}")
+        logger.error(f"  - Product status: {product.get('image_status')}")
+        logger.error(f"  - Brand: {brand}")
+        logger.error(f"  - Safe SKU: {safe_sku}")
+        
+        return '', 404
         
     except Exception as e:
         logger.error(f"Error serving image for SKU {sku}: {str(e)}")
@@ -360,27 +517,37 @@ def export_page():
 
 @app.route('/api/export', methods=['POST'])
 def export_excel():
-    """Export to Excel"""
+    """Export to Excel - FIXED with proper filtering"""
     
     data = request.json
     batch_ids = data.get('batch_ids', [])
+    status_filter = data.get('status_filter', 'all')
     
-    # Generate filename
+    # Generate filename with status indicator
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_file = f"exports/NWK_Export_{timestamp}.xlsx"
+    status_suffix = f"_{status_filter}" if status_filter != 'all' else ''
+    output_file = f"exports/NWK_Export_{timestamp}{status_suffix}.xlsx"
     os.makedirs('exports', exist_ok=True)
     
-    # Export
-    success = db.export_to_excel(output_file, batch_ids if batch_ids else None)
+    # Export with new parameters - pass empty list as None for batch_ids
+    success = db.export_to_excel(
+        output_file, 
+        None if not batch_ids else batch_ids,  # Fixed: pass None instead of empty list
+        status_filter=status_filter
+    )
     
     if success:
+        # Get file size for UI
+        file_size = os.path.getsize(output_file) if os.path.exists(output_file) else 0
+        
         return jsonify({
             'success': True,
             'file': output_file,
-            'download_url': f'/download/{os.path.basename(output_file)}'
+            'download_url': f'/download/{os.path.basename(output_file)}',
+            'file_size': file_size
         })
     else:
-        return jsonify({'error': 'Export failed'}), 500
+        return jsonify({'error': 'Export failed - no data found or error occurred'}), 500
 
 @app.route('/download/<filename>')
 def download_file(filename):
@@ -445,6 +612,347 @@ def handle_config():
         
         return jsonify({'success': True, 'message': 'Configuration updated'})
 
+@app.route('/products')
+def products_page():
+    """Visual product dashboard page"""
+    return render_template('products.html')
+
+@app.route('/api/products/all')
+def get_all_products():
+    """Get all products with filtering support"""
+    
+    # Use thread-safe cursor
+    cursor = db.conn.cursor()
+    cursor.row_factory = sqlite3.Row
+    try:
+        query = '''SELECT * FROM products ORDER BY Sorting, Variant_SKU'''
+        results = cursor.execute(query).fetchall()
+        products = [dict(row) for row in results]
+        
+        return jsonify({
+            'success': True,
+            'products': products,
+            'total': len(products)
+        })
+    except Exception as e:
+        logger.error(f"Error fetching products: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+
+@app.route('/api/products/filters')
+def get_product_filters():
+    """Get unique values for filter dropdowns"""
+    
+    cursor = db.conn.cursor()
+    try:
+        brands = cursor.execute('SELECT DISTINCT Brand FROM products WHERE Brand IS NOT NULL ORDER BY Brand').fetchall()
+        tier1s = cursor.execute('SELECT DISTINCT Tier_1 FROM products WHERE Tier_1 IS NOT NULL ORDER BY Tier_1').fetchall()
+        
+        return jsonify({
+            'brands': [row[0] for row in brands],
+            'tier1s': [row[0] for row in tier1s]
+        })
+    finally:
+        cursor.close()
+
+@app.route('/api/export/selected', methods=['POST'])
+def export_selected():
+    """Export selected products to Excel"""
+    
+    data = request.json
+    skus = data.get('skus', [])
+    
+    if not skus:
+        return jsonify({'error': 'No products selected'}), 400
+    
+    # Generate filename
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_file = f"exports/NWK_Selected_{len(skus)}_products_{timestamp}.xlsx"
+    os.makedirs('exports', exist_ok=True)
+    
+    # Export selected products
+    cursor = db.conn.cursor()
+    try:
+        placeholders = ','.join(['?' for _ in skus])
+        query = f'SELECT * FROM products WHERE Variant_SKU IN ({placeholders})'
+        df = pd.read_sql_query(query, db.conn, params=skus)
+        
+        if not df.empty:
+            df.to_excel(output_file, index=False)
+            return jsonify({
+                'success': True,
+                'download_url': f'/download/{os.path.basename(output_file)}'
+            })
+        else:
+            return jsonify({'error': 'No data to export'}), 404
+    except Exception as e:
+        logger.error(f"Export error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+
+@app.route('/api/reprocess/<sku>', methods=['POST'])
+def reprocess_product(sku):
+    """Reprocess a single product"""
+    
+    # Get the product
+    product = db.get_product_by_sku(sku)
+    if not product:
+        return jsonify({'error': 'Product not found'}), 404
+    
+    # Clear existing image data
+    cursor = db.conn.cursor()
+    try:
+        cursor.execute('''
+            UPDATE products SET 
+                downloaded_image_path = NULL,
+                image_status = 'not_processed',
+                confidence = NULL,
+                source_retailer = NULL,
+                search_query = NULL,
+                image_source = NULL
+            WHERE Variant_SKU = ?
+        ''', (sku,))
+        db.conn.commit()
+        
+        # Process the product
+        results = processor.process_batch([dict(product)], progress_callback=None)
+        
+        if results['success'] > 0:
+            # Get updated product
+            updated = db.get_product_by_sku(sku)
+            return jsonify({
+                'success': True,
+                'message': f'Product {sku} reprocessed successfully',
+                'status': updated['image_status'] if updated else 'unknown'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'message': 'Failed to find image for product'
+            })
+            
+    except Exception as e:
+        db.conn.rollback()
+        logger.error(f"Error reprocessing {sku}: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+
+@app.route('/api/validate-images', methods=['POST'])
+def validate_images():
+    """Run CLIP validation on products"""
+    
+    data = request.get_json() or {}
+    validate_all = data.get('validate_all', False)
+    skus = data.get('skus', [])
+    
+    try:
+        # Import CLIP validator (lazy load)
+        from clip_validator import CLIPValidator
+        
+        if validate_all:
+            # Get all products with images but no CLIP scores
+            products = db.get_products_for_validation()
+        else:
+            # Get specific products
+            products = []
+            for sku in skus:
+                product = db.get_product_by_sku(sku)
+                if product and product.get('downloaded_image_path'):
+                    products.append(product)
+        
+        if not products:
+            return jsonify({
+                'success': False,
+                'message': 'No products found for validation'
+            })
+        
+        logger.info(f"Running CLIP validation on {len(products)} products")
+        
+        # Initialize validator
+        validator = CLIPValidator({'update_database': True})
+        
+        # Run validation
+        results = validator.validate_batch(products)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Validated {len(products)} products',
+            'results': results
+        })
+        
+    except ImportError:
+        return jsonify({
+            'success': False,
+            'error': 'CLIP validator not available'
+        }), 500
+    except Exception as e:
+        logger.error(f"CLIP validation error: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/clip-actions', methods=['POST'])
+def clip_actions():
+    """Perform actions based on CLIP scores"""
+    
+    data = request.get_json() or {}
+    action = data.get('action')
+    threshold = data.get('threshold', 0.6)
+    
+    try:
+        if action == 'auto_approve_high':
+            # Auto-approve products with high CLIP scores
+            cursor = db.conn.cursor()
+            cursor.execute(
+                'SELECT Variant_SKU FROM products WHERE clip_confidence > ? AND image_status = "pending"',
+                (threshold,)
+            )
+            skus = [row[0] for row in cursor.fetchall()]
+            cursor.close()
+            
+            approved_count = 0
+            for sku in skus:
+                if processor.move_to_approved(sku):
+                    approved_count += 1
+            
+            return jsonify({
+                'success': True,
+                'message': f'Auto-approved {approved_count} products with CLIP score > {threshold*100}%',
+                'count': approved_count
+            })
+            
+        elif action == 'auto_decline_low':
+            # Auto-decline products with very low CLIP scores
+            low_threshold = data.get('low_threshold', 0.3)
+            cursor = db.conn.cursor()
+            cursor.execute(
+                'SELECT Variant_SKU FROM products WHERE clip_confidence < ? AND image_status = "pending"',
+                (low_threshold,)
+            )
+            skus = [row[0] for row in cursor.fetchall()]
+            cursor.close()
+            
+            declined_count = 0
+            for sku in skus:
+                if processor.move_to_declined(sku):
+                    declined_count += 1
+            
+            return jsonify({
+                'success': True,
+                'message': f'Auto-declined {declined_count} products with CLIP score < {low_threshold*100}%',
+                'count': declined_count
+            })
+            
+        elif action == 'get_review_candidates':
+            # Get products that need manual review (medium CLIP scores)
+            cursor = db.conn.cursor()
+            cursor.execute(
+                'SELECT Variant_SKU, Brand, Title, clip_confidence, clip_action FROM products WHERE clip_confidence BETWEEN ? AND ? AND image_status = "pending" ORDER BY clip_confidence DESC LIMIT 50',
+                (0.4, 0.7)
+            )
+            products = [{
+                'sku': row[0],
+                'brand': row[1], 
+                'title': row[2],
+                'confidence': row[3],
+                'action': row[4]
+            } for row in cursor.fetchall()]
+            cursor.close()
+            
+            return jsonify({
+                'success': True,
+                'products': products,
+                'count': len(products)
+            })
+            
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid action specified'
+            }), 400
+            
+    except Exception as e:
+        logger.error(f"CLIP action error: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/validation-summary')
+def get_validation_summary():
+    """Get summary of CLIP validations"""
+    
+    try:
+        cursor = db.conn.cursor()
+        
+        # Check if validation columns exist
+        cursor.execute(
+            "SELECT COUNT(*) FROM pragma_table_info('products') WHERE name='clip_confidence'"
+        )
+        if cursor.fetchone()[0] == 0:
+            cursor.close()
+            return jsonify({
+                'message': 'No validations performed yet',
+                'total': 0
+            })
+        
+        # Get validation statistics
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as total,
+                COUNT(clip_confidence) as validated,
+                AVG(clip_confidence) as avg_confidence,
+                SUM(CASE WHEN clip_action = 'auto_approve' THEN 1 ELSE 0 END) as auto_approved,
+                SUM(CASE WHEN clip_action = 'manual_review' THEN 1 ELSE 0 END) as needs_review,
+                SUM(CASE WHEN clip_action = 'auto_reject' THEN 1 ELSE 0 END) as auto_rejected
+            FROM products WHERE downloaded_image_path IS NOT NULL
+        """)
+        
+        row = cursor.fetchone()
+        stats = {
+            'total': row[0],
+            'validated': row[1],
+            'avg_confidence': row[2],
+            'auto_approved': row[3],
+            'needs_review': row[4],
+            'auto_rejected': row[5]
+        }
+        
+        # Get recent validations
+        cursor.execute("""
+            SELECT Variant_SKU, Title, Brand, clip_confidence, clip_action, clip_validation
+            FROM products 
+            WHERE clip_confidence IS NOT NULL
+            ORDER BY rowid DESC
+            LIMIT 10
+        """)
+        
+        recent = []
+        for row in cursor.fetchall():
+            recent.append({
+                'sku': row[0],
+                'title': row[1],
+                'brand': row[2],
+                'confidence': row[3],
+                'action': row[4],
+                'reason': row[5]
+            })
+        
+        cursor.close()
+        
+        return jsonify({
+            'stats': stats,
+            'recent': recent
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting validation summary: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/test-connection')
 def test_connection():
     """Test database and API connections"""
@@ -481,6 +989,96 @@ def not_found(error):
 def internal_error(error):
     return jsonify({'error': 'Internal server error'}), 500
 
+@app.route('/api/validate-paths')
+def validate_image_paths():
+    """Validate all image paths in database exist on disk"""
+    
+    cursor = db.conn.cursor()
+    try:
+        products = cursor.execute(
+            'SELECT Variant_SKU, downloaded_image_path FROM products WHERE downloaded_image_path IS NOT NULL'
+        ).fetchall()
+        
+        results = {
+            'total': len(products),
+            'valid': 0,
+            'missing': [],
+            'invalid': 0
+        }
+        
+        for sku, path in products:
+            if path and os.path.exists(path):
+                results['valid'] += 1
+            else:
+                results['missing'].append({'sku': sku, 'path': path})
+                results['invalid'] += 1
+        
+        return jsonify(results)
+    finally:
+        cursor.close()
+
+@app.route('/api/repair-paths', methods=['POST'])
+def repair_image_paths():
+    """Attempt to repair broken image paths"""
+    
+    repaired = 0
+    failed = []
+    
+    cursor = db.conn.cursor()
+    try:
+        # Get all products with paths
+        products = cursor.execute(
+            'SELECT Variant_SKU, Title, Brand, downloaded_image_path FROM products WHERE downloaded_image_path IS NOT NULL'
+        ).fetchall()
+        
+        for sku, title, brand, old_path in products:
+            if old_path and not os.path.exists(old_path):
+                # Try to find the image in approved/pending/declined folders
+                safe_sku = processor.sanitize_filename(sku)
+                safe_brand = processor.sanitize_filename(brand) if brand else 'Unknown'
+                
+                # Search in all possible locations
+                search_paths = [
+                    f"output/approved/{safe_brand}",
+                    f"output/pending/{safe_brand}",
+                    f"output/declined/{safe_brand}"
+                ]
+                
+                found = False
+                for search_dir in search_paths:
+                    if os.path.exists(search_dir):
+                        for file in os.listdir(search_dir):
+                            if safe_sku in file and file.endswith('.jpg'):
+                                new_path = os.path.join(search_dir, file)
+                                # Update database
+                                cursor.execute(
+                                    'UPDATE products SET downloaded_image_path = ? WHERE Variant_SKU = ?',
+                                    (new_path, sku)
+                                )
+                                repaired += 1
+                                found = True
+                                break
+                    if found:
+                        break
+                
+                if not found:
+                    failed.append(sku)
+        
+        db.conn.commit()
+        
+        return jsonify({
+            'success': True,
+            'repaired': repaired,
+            'failed': failed,
+            'message': f'Repaired {repaired} paths, {len(failed)} could not be found'
+        })
+        
+    except Exception as e:
+        db.conn.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cursor.close()
+
 if __name__ == '__main__':
     # Ensure all directories exist
     for folder in ['output/approved', 'output/pending', 'output/declined', 'uploads', 'exports']:
@@ -491,7 +1089,7 @@ if __name__ == '__main__':
     print("NWK IMAGE MANAGEMENT SYSTEM")
     print("="*60)
     print("Starting web server...")
-    print(f"Open browser to: http://localhost:5001")
+    print(f"Open browser to: http://localhost:8847")
     print("="*60 + "\n")
     
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    app.run(debug=True, host='0.0.0.0', port=8847)

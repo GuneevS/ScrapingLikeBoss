@@ -1,0 +1,433 @@
+{% extends "base.html" %}
+
+{% block title %}Product Dashboard - NWK Image System{% endblock %}
+
+{% block content %}
+<style>
+    .filters-card {
+        background: white;
+        border-radius: 8px;
+        padding: 1.5rem;
+        margin-bottom: 2rem;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .search-box {
+        display: flex;
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+    
+    .search-box input {
+        flex: 1;
+    }
+    
+    .filter-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        margin-top: 1rem;
+    }
+    
+    .products-table {
+        width: 100%;
+        border-collapse: collapse;
+        background: white;
+    }
+    
+    .products-table th {
+        background: #34495e;
+        color: white;
+        padding: 1rem;
+        text-align: left;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+    }
+    
+    .products-table td {
+        padding: 0.75rem;
+        border-bottom: 1px solid #ecf0f1;
+    }
+    
+    .products-table tr:hover {
+        background: #f8f9fa;
+    }
+    
+    .product-image {
+        width: 60px;
+        height: 60px;
+        object-fit: cover;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    
+    .status-badge {
+        padding: 0.25rem 0.75rem;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 500;
+    }
+    
+    .status-approved {
+        background: #d4edda;
+        color: #155724;
+    }
+    
+    .status-pending {
+        background: #fff3cd;
+        color: #856404;
+    }
+    
+    .status-declined {
+        background: #f8d7da;
+        color: #721c24;
+    }
+    
+    .status-not_processed {
+        background: #e0e0e0;
+        color: #666;
+    }
+    
+    .bulk-select {
+        width: 20px;
+        height: 20px;
+        cursor: pointer;
+    }
+    
+    .pagination button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+    
+    /* CLIP validation styles */
+    .clip-score {
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-weight: bold;
+        cursor: help;
+    }
+    
+    .clip-score.auto_approve {
+        background: #d4edda;
+        color: #155724;
+    }
+    
+    .clip-score.manual_review {
+        background: #fff3cd;
+        color: #856404;
+    }
+    
+    .clip-score.auto_reject {
+        background: #f8d7da;
+        color: #721c24;
+    }
+    
+    .bulk-actions-bar {
+        background: #2c3e50;
+        color: white;
+        padding: 1rem;
+        border-radius: 4px;
+        display: none;
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        margin-bottom: 1rem;
+    }
+    
+    .bulk-actions-bar.active {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    
+    .loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        display: none;
+        justify-content: center;
+        align-items: center;
+        z-index: 9999;
+    }
+    
+    .loading-overlay.active {
+        display: flex;
+    }
+    
+    .loading-spinner {
+        background: white;
+        padding: 2rem;
+        border-radius: 8px;
+        text-align: center;
+    }
+    
+    .pagination {
+        display: flex;
+        gap: 0.5rem;
+        justify-content: center;
+        margin-top: 2rem;
+        align-items: center;
+    }
+    
+    .pagination button {
+        padding: 0.5rem 1rem;
+        border: 1px solid #ddd;
+        background: white;
+        cursor: pointer;
+        border-radius: 4px;
+    }
+    
+    .pagination button:hover:not(:disabled) {
+        background: #f0f0f0;
+    }
+    
+    .pagination button.active {
+        background: #3498db;
+        color: white;
+        border-color: #3498db;
+    }
+    
+    .stats-bar {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 1rem;
+        margin-bottom: 2rem;
+    }
+    
+    .stat-card {
+        background: white;
+        padding: 1rem;
+        border-radius: 8px;
+        text-align: center;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .stat-number {
+        font-size: 2rem;
+        font-weight: bold;
+        color: #2c3e50;
+    }
+    
+    .stat-label {
+        color: #7f8c8d;
+        font-size: 0.9rem;
+        margin-top: 0.5rem;
+    }
+    
+    .modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.8);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+    }
+    
+    .modal-content {
+        background: white;
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    .modal-header {
+        background: #34495e;
+        color: white;
+        padding: 1rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    
+    .modal-body {
+        padding: 1rem;
+    }
+    
+    .modal-footer {
+        padding: 1rem;
+        display: flex;
+        gap: 1rem;
+        justify-content: center;
+        border-top: 1px solid #ecf0f1;
+    }
+</style>
+
+<div class="container">
+    <h2>Product Dashboard</h2>
+    
+    <!-- Statistics Bar -->
+    <div class="stats-bar" id="stats-bar">
+        <div class="stat-card">
+            <div class="stat-number" id="stat-total">0</div>
+            <div class="stat-label">Total Products</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number" id="stat-approved">0</div>
+            <div class="stat-label">Approved</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number" id="stat-pending">0</div>
+            <div class="stat-label">Pending</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number" id="stat-declined">0</div>
+            <div class="stat-label">Declined</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-number" id="stat-notprocessed">0</div>
+            <div class="stat-label">Not Processed</div>
+        </div>
+    </div>
+    
+    <!-- Filters & Search -->
+    <div class="filters-card">
+        <h3>Filters & Search</h3>
+        
+        <div class="search-box">
+            <input type="text" id="search-input" class="form-control" 
+                   placeholder="Search by SKU, Title, Brand, or Barcode...">
+            <button class="btn" onclick="applyFilters()">Search</button>
+            <button class="btn" onclick="clearFilters()">Clear</button>
+        </div>
+        
+        <div class="filter-row">
+            <div class="form-group">
+                <label class="form-label">Status</label>
+                <select id="filter-status" onchange="applyFilters()" title="Filter by status">
+                    <option value="">All Status</option>
+                    <option value="approved">Approved</option>
+                    <option value="pending">Pending</option>
+                    <option value="declined">Declined</option>
+                    <option value="not_processed">Not Processed</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">CLIP Score</label>
+                <select id="filter-clip" onchange="applyFilters()" title="Filter by CLIP score">
+                    <option value="">All CLIP Scores</option>
+                    <option value="auto_approve">✅ Auto Approved (60%+)</option>
+                    <option value="manual_review">⚠️ Needs Review (30-60%)</option>
+                    <option value="auto_reject">❌ Auto Rejected (<30%)</option>
+                    <option value="not_validated">Not Validated</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Brand</label>
+                <select id="filter-brand" class="form-control" onchange="applyFilters()" title="Filter by brand">
+                    <option value="">All Brands</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Tier 1</label>
+                <select id="filter-tier1" class="form-control" onchange="applyFilters()" title="Filter by tier">
+                    <option value="">All Tiers</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Has Image</label>
+                <select id="filter-has-image" class="form-control" onchange="applyFilters()" title="Filter by image status">
+                    <option value="">All</option>
+                    <option value="yes">With Image</option>
+                    <option value="no">Without Image</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Confidence</label>
+                <select id="filter-confidence" class="form-control" onchange="applyFilters()" title="Filter by confidence">
+                    <option value="">All</option>
+                    <option value="high">High (>80%)</option>
+                    <option value="medium">Medium (50-80%)</option>
+                    <option value="low">Low (<50%)</option>
+                </select>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Bulk Actions Bar -->
+    <div class="bulk-actions-bar" id="bulk-actions-bar">
+        <div>
+            <span id="selected-count">0</span> products selected
+        </div>
+        <div>
+            <button class="btn btn-success" onclick="bulkApprove()">Approve Selected</button>
+            <button class="btn btn-danger" onclick="bulkDecline()">Decline Selected</button>
+            <button class="btn btn-primary" onclick="bulkReprocess()">Reprocess Selected</button>
+            <button class="btn btn-info" onclick="bulkValidateCLIP()">Validate CLIP</button>
+            <button class="btn btn-success" onclick="bulkApproveHighCLIP()">Approve High CLIP (>60%)</button>
+            <button class="export-selected-btn" onclick="exportSelected()">Export Selected</button>
+            <button class="btn" onclick="clearSelection()">Clear Selection</button>
+        </div>
+    </div>
+    
+    <!-- Products Table -->
+    <div class="table-container">
+        <table class="products-table" id="products-table">
+            <thead>
+                <tr>
+                    <th><input type="checkbox" id="select-all-checkbox" title="Select all products" aria-label="Select all products"></th>
+                    <th>Image</th>
+                    <th>SKU</th>
+                    <th>Product Name</th>
+                    <th>Brand</th>
+                    <th>Category</th>
+                    <th>Status</th>
+                    <th>CLIP Analysis</th>
+                    <th>Source</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="products-tbody">
+                <!-- Products will be loaded here -->
+            </tbody>
+        </table>
+    </div>
+    
+    <!-- Pagination -->
+    <div class="pagination" id="pagination">
+        <!-- Pagination buttons will be added here -->
+    </div>
+    
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loading-overlay">
+        <div class="loading-spinner">
+            <h3>Loading...</h3>
+            <p>Please wait while we fetch the products</p>
+        </div>
+    </div>
+    
+    <!-- Image Preview Modal -->
+    <div id="imageModal" class="modal products-modal">
+        <div class="modal-content products-modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">Product Image</h3>
+                <button onclick="closeModal()" class="products-modal-close" title="Close modal">&times;</button>
+            </div>
+            <div class="modal-body products-modal-body">
+                <img id="modalImage" src="" alt="Product preview image" class="products-modal-image">
+                <div id="modalInfo" class="products-modal-info"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-success" onclick="approveFromModal()">Approve</button>
+                <button class="btn btn-danger" onclick="declineFromModal()">Decline</button>
+                <button class="btn" onclick="closeModal()">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/common.js') }}"></script>
+<script src="{{ url_for('static', filename='js/products.js') }}"></script>
+
+{% endblock %}

@@ -15,27 +15,144 @@ from urllib.parse import urlencode
 from datetime import datetime
 
 from database import ImageDatabase
+from learning_system import LearningSystem
 from src import img_utils, downloader
 
 logger = logging.getLogger(__name__)
+
+class ImageSearcher:
+    """Simple wrapper for search functionality"""
+    def __init__(self, config):
+        self.config = config
+        self.api_key = config.get('search', {}).get('serp_api_key')
+    
+    def search_google_images(self, query: str, num_results: int = 3) -> List[dict]:
+        """Search Google Images via SerpAPI"""
+        if not self.api_key:
+            return []
+        
+        params = {
+            'engine': 'google_images',
+            'q': query,
+            'api_key': self.api_key,
+            'num': num_results
+        }
+        
+        try:
+            import requests
+            response = requests.get('https://serpapi.com/search', params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                results = []
+                for img in data.get('images_results', [])[:num_results]:
+                    results.append({
+                        'url': img.get('original'),
+                        'original': img.get('original'),  # Add for compatibility
+                        'link': img.get('link'),  # Add alternate URL
+                        'thumbnail': img.get('thumbnail'),  # Add thumbnail as fallback
+                        'title': img.get('title', ''),
+                        'source': img.get('source', ''),
+                        'snippet': img.get('snippet', '')
+                    })
+                return results
+        except Exception as e:
+            logger.error(f"Search error: {str(e)}")
+        return []
+
+class ImageDownloader:
+    """Simple wrapper for download functionality"""
+    def __init__(self, config):
+        self.config = config
+    
+    async def download_image(self, url: str) -> Optional[bytes]:
+        """Download image from URL with proper headers"""
+        if not url or not isinstance(url, str):
+            logger.error(f"Invalid URL: {url}")
+            return None
+            
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        }
+            
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, timeout=30, ssl=False) as response:
+                    if response.status == 200:
+                        return await response.read()
+                    else:
+                        logger.warning(f"Download failed with status {response.status} for URL: {url}")
+        except Exception as e:
+            logger.error(f"Download error for URL {url}: {str(e)}")
+        return None
 
 class IntelligentImageProcessor:
     def __init__(self, config: dict, db: ImageDatabase):
         self.config = config
         self.db = db
-        self.api_key = config['search']['serp_api_key']
+        self.api_key = config.get('search', {}).get('serp_api_key')
+        self.searcher = ImageSearcher(config)
+        self.downloader = ImageDownloader(config)
+        self.learning = LearningSystem(db)
         
-        # Folders
-        self.approved_dir = Path("output/approved")
-        self.pending_dir = Path("output/pending")
-        self.declined_dir = Path("output/declined")
+        # Setup directories
+        self.output_dir = Path('output')
+        self.approved_dir = self.output_dir / 'approved'
+        self.pending_dir = self.output_dir / 'pending'
+        self.declined_dir = self.output_dir / 'declined'
         
-        # Create folders
-        for folder in [self.approved_dir, self.pending_dir, self.declined_dir]:
-            folder.mkdir(parents=True, exist_ok=True)
+        for dir in [self.approved_dir, self.pending_dir, self.declined_dir]:
+            dir.mkdir(parents=True, exist_ok=True)
         
-        # Learning-based confidence adjustments
+        # Load confidence adjustments from learning
         self.confidence_adjustments = self._load_confidence_adjustments()
+        
+        # IMPROVED: Retailer prioritization system
+        self.TRUSTED_RETAILERS = {
+            'tier1': ['shoprite.co.za', 'checkers.co.za', 'pnp.co.za', 'makro.co.za'],
+            'tier2': ['takealot.com', 'game.co.za', 'woolworths.co.za', 'clicks.co.za'],
+            'tier3': []  # All others
+        }
+        
+        # Search result cache to reduce API calls
+        self.search_cache = {}
+        self.cache_hits = 0
+        self.total_searches = 0
+    
+    def check_local_cache(self, product: dict) -> Optional[dict]:
+        """Check if product image already exists locally"""
+        sku = product.get('Variant_SKU', 'Unknown')
+        
+        # Check if product already has an image link
+        existing_product = self.db.get_product_by_sku(sku)
+        if existing_product and existing_product.get('Image_link'):
+            image_link = existing_product['Image_link']
+            # Check if it's a local file path that exists
+            if image_link.startswith('/') or image_link.startswith('./'):
+                image_path = Path(image_link)
+                if image_path.exists():
+                    return {
+                        'success': True,
+                        'image_path': str(image_path),
+                        'source': 'local_cache',
+                        'confidence': 100
+                    }
+        
+        return None
+    
+    def cache_search_result(self, product: dict, result: dict):
+        """Cache search result for future use"""
+        if result and result.get('success'):
+            cache_key = self._get_search_cache_key(
+                product.get('Brand', ''),
+                product.get('Tier_1', ''),
+                product.get('Variant_Title', '')
+            )
+            self.search_cache[cache_key] = result.copy()
     
     def _load_confidence_adjustments(self) -> Dict:
         """Load confidence adjustments based on learning"""
@@ -62,259 +179,430 @@ class IntelligentImageProcessor:
         
         return adjustments
     
-    def sanitize_filename(self, filename: str) -> str:
-        """Sanitize filename preserving brand names like Good 'n Gold"""
-        # Keep apostrophes for brand names
-        invalid_chars = '<>:"/\\|?*'
-        for char in invalid_chars:
-            if char != "'":  # Keep apostrophes
-                filename = filename.replace(char, '_')
-        
-        filename = re.sub(r'\s+', '_', filename)
-        filename = re.sub(r'_+', '_', filename)
-        filename = filename.strip('_.')
-        
-        return filename[:200] if filename else "unknown"
+    def sanitize_filename(self, text: str) -> str:
+        """Sanitize text for use as filename"""
+        # Remove invalid characters
+        text = re.sub(r'[<>:"/\\|?*]', '', text)
+        # Replace spaces with underscores
+        text = text.replace(' ', '_')
+        # Limit length
+        return text[:100]
     
-    async def process_product(self, product: Dict) -> Dict:
-        """Process a single product with local search first"""
+    def _get_search_cache_key(self, brand: str, category: str, variant: str) -> str:
+        """Generate cache key for similar products - more specific to avoid over-caching"""
+        brand = (brand or 'unknown').lower()[:20]
+        category = (category or 'unknown').lower()[:20] 
+        variant_full = (variant or 'none').lower()[:30]  # Use full variant, not just first word
+        return f"{brand}_{category}_{variant_full}"
+    
+    def _adjust_cached_result_for_variant(self, cached_result: dict, product: dict) -> dict:
+        """Adjust cached result for specific variant"""
+        # Keep the same source but adjust confidence based on variant match
+        variant = product.get('Variant_Title', '').lower()
+        cached_title = cached_result.get('title', '').lower()
         
-        sku = product['Variant_SKU']
-        brand = product.get('Brand', '')
+        if variant and variant not in cached_title:
+            # Reduce confidence if variant doesn't match
+            cached_result['confidence'] = max(30, cached_result.get('confidence', 50) - 20)
+            cached_result['adjusted_from_cache'] = True
+        
+        return cached_result
+    
+    async def search_product_image(self, product: dict) -> Optional[dict]:
+        """Search for product image using improved strategies with variant awareness"""
+        
+        sku = product.get('Variant_SKU', 'Unknown')
         title = product.get('Title', '')
-        barcode = product.get('Variant_Barcode', '')
-        
-        logger.info(f"Processing: {title} (SKU: {sku})")
-        
-        # STEP 1: Check local approved folder first
-        local_path = self._check_local_approved(brand, title, barcode)
-        if local_path:
-            logger.info(f"  ✓ Found locally: {local_path}")
-            self.db.update_product_image(
-                sku, local_path, 100.0, 'local_approved', 'approved',
-                'Previously approved local image', 'Local search', local_path
-            )
-            return {
-                'sku': sku,
-                'status': 'found_local',
-                'path': local_path,
-                'confidence': 100.0
-            }
-        
-        # STEP 2: Check search cache
-        cached = self.db.check_search_cache(barcode, brand)
-        if cached and cached['confidence'] >= 50:
-            logger.info(f"  ✓ Found in cache: {cached['source']} ({cached['confidence']}%)")
-            
-            # Download and save
-            result = await self._download_and_save_image(
-                cached['image_url'], 
-                product, 
-                cached['confidence'], 
-                cached['source'],
-                cached.get('description', ''),
-                cached.get('search_query', ''),
-                cached['image_url']
-            )
-            
-            if result['success']:
-                return {
-                    'sku': sku,
-                    'status': 'found_cached',
-                    'path': result['path'],
-                    'confidence': cached['confidence']
-                }
-        
-        # STEP 3: Search online with improved strategy
-        search_result = await self._search_online(product)
-        
-        if search_result:
-            return {
-                'sku': sku,
-                'status': 'found_online',
-                'path': search_result['path'],
-                'confidence': search_result['confidence']
-            }
-        
-        # Not found
-        logger.warning(f"  ✗ No suitable image found for: {title}")
-        search_attempts = f'Brand: {brand}, Title: {title}'
-        if barcode and barcode != 'nan':
-            search_attempts += f', Barcode: {barcode}'
-        
-        self.db.update_product_image(
-            sku, None, 0, None, 'not_found', 
-            'No suitable image found', search_attempts, ''
-        )
-        
-        return {
-            'sku': sku,
-            'status': 'not_found',
-            'path': None,
-            'confidence': 0
-        }
-    
-    def _check_local_approved(self, brand: str, title: str, barcode: str) -> Optional[str]:
-        """Check local approved folder for existing images"""
-        
-        if not brand or not title:
-            return None
-        
-        # Clean names for filesystem
-        brand_folder = self.sanitize_filename(brand)
-        
-        # Check for files with SKU-based naming (preferred approach)
-        # This searches the brand folder for any file that might match this product
-        brand_dir = self.approved_dir / brand_folder
-        if brand_dir.exists():
-            for img_file in brand_dir.glob('*.jpg'):
-                if img_file.stem.endswith(f"_{barcode}") or title.lower().replace(' ', '_') in img_file.stem.lower():
-                    return str(img_file)
-        
-        # Check exact match with old naming format for backwards compatibility
-        filename_jpg = self.sanitize_filename(title) + '.jpg'
-        path_jpg = self.approved_dir / brand_folder / filename_jpg
-        if path_jpg.exists():
-            return str(path_jpg)
-        
-        # Check database for approved with same barcode
-        if barcode:
-            db_result = self.db.check_local_approved(brand, title, barcode)
-            if db_result and os.path.exists(db_result):
-                return db_result
-        
-        return None
-    
-    async def _search_online(self, product: Dict) -> Optional[Dict]:
-        """Search online with intelligent strategy"""
-        
         brand = product.get('Brand', '')
-        title = product.get('Title', '')
         barcode = product.get('Variant_Barcode', '')
+        variant = product.get('Variant_Title', '')
         
-        # Prioritize retailers based on learning
-        retailers_priority = self._get_retailer_priority(brand)
+        # Try local cache first
+        cached = self.check_local_cache(product)
+        if cached:
+            logger.info(f"✓ Found in local cache: {sku}")
+            return cached
         
-        connector = aiohttp.TCPConnector(limit=5)
-        timeout = aiohttp.ClientTimeout(total=30)
+        # Check search result cache for similar products
+        cache_key = self._get_search_cache_key(brand, product.get('Tier_1', ''), variant)
+        if cache_key in self.search_cache:
+            self.cache_hits += 1
+            logger.info(f"✓ Search cache hit for similar product: {sku}")
+            cached_result = self.search_cache[cache_key].copy()
+            # Adjust for this specific variant
+            cached_result['sku'] = sku
+            return self._adjust_cached_result_for_variant(cached_result, product)
         
-        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        # Try online search with improved strategy
+        self.total_searches += 1
+        result = self.search_online_improved(product)
+        if result:
+            # Download and save the image
+            download_result = await self._download_and_save_image(
+                result.get('url', ''),
+                product,
+                result.get('confidence', 50),
+                result.get('source', ''),
+                result.get('description', ''),
+                result.get('search_query', ''),
+                result.get('image_source', '')
+            )
             
-            # Try retailers in priority order
-            for retailer in retailers_priority:
-                result = await self._search_retailer(session, product, retailer)
-                if result and result['confidence'] >= 60:
-                    # Good match found
-                    downloaded = await self._download_and_save_image(
-                        result['url'], 
-                        product, 
-                        result['confidence'], 
-                        result['source'],
-                        result.get('description', ''),
-                        result.get('search_query', ''),
-                        result.get('image_source', result['url'])
-                    )
+            if download_result.get('success'):
+                # Cache the result for similar products only if download succeeded
+                self.search_cache[cache_key] = result.copy()
+                self.cache_search_result(product, result)
+                
+                # Return success with download info
+                result.update(download_result)
+                logger.info(f"✓ Downloaded and saved image for {sku}")
+                return result
+            else:
+                logger.warning(f"✗ Failed to download image for {sku}")
+                return {'success': False, 'error': 'Download failed'}
+        
+        logger.info(f"Cache efficiency: {self.cache_hits}/{self.total_searches} = {self.cache_hits/max(1,self.total_searches)*100:.1f}%")
+        return {'success': False, 'error': 'No suitable image found'}
+    
+    def search_online_improved(self, product: dict) -> Optional[dict]:
+        """IMPROVED: Search online with retailer prioritization and variant awareness"""
+        
+        sku = product.get('Variant_SKU', 'Unknown')
+        strategies = self.learning.get_search_strategies()
+        
+        # Search by retailer tiers for efficiency
+        for tier_name, retailers in self.TRUSTED_RETAILERS.items():
+            if tier_name == 'tier3':
+                # For tier3, use learning system's retailers not in tier1/2
+                all_retailers = self.learning.get_top_retailers()
+                tier1_2 = self.TRUSTED_RETAILERS['tier1'] + self.TRUSTED_RETAILERS['tier2']
+                retailers = [r for r in all_retailers if r not in tier1_2][:2]
+            
+            if not retailers:
+                continue
+            
+            for site in retailers:
+                # Try enhanced query first (with variant details)
+                for use_enhanced in [True, False]:
+                    query = self.build_enhanced_search_query(product, site, use_enhanced)
                     
-                    if downloaded['success']:
-                        # Cache successful search
-                        self.db.save_search_cache(
-                            barcode, brand, title,
-                            result['url'], result['confidence'], result['source']
+                    if not query:
+                        continue
+                    
+                    try:
+                        logger.debug(f"Searching {site} for {sku}: {query}")
+                        results = self.searcher.search_google_images(
+                            query, 
+                            num_results=self.config.get('search', {}).get('results_per_query', 3)
                         )
                         
-                        return {
-                            'path': downloaded['path'],
-                            'confidence': result['confidence']
-                        }
-            
-            # Broader search if retailers don't have it
-            result = await self._search_broad(session, product)
-            if result:
-                downloaded = await self._download_and_save_image(
-                    result['url'], 
-                    product, 
-                    result['confidence'], 
-                    result['source'],
-                    result.get('description', ''),
-                    result.get('search_query', ''),
-                    result.get('image_source', result['url'])
-                )
+                        if results:
+                            # Evaluate with variant awareness
+                            best = self.evaluate_results_with_variant_matching(results, product, site)
+                            if best:
+                                best['search_strategy'] = 'enhanced_variant' if use_enhanced else 'barcode_brand'
+                                best['search_query'] = query
+                                best['retailer_tier'] = tier_name
+                                logger.info(f"✓ Found on {site} ({tier_name}) for {sku}")
+                                logger.info(f"  URL: {best.get('url', 'NO URL')}")
+                                logger.info(f"  Confidence: {best.get('confidence', 0)}")
+                                return best
+                    
+                    except Exception as e:
+                        logger.error(f"Search error for {sku} on {site}: {str(e)}")
+                        continue
                 
-                if downloaded['success']:
-                    self.db.save_search_cache(
-                        barcode, brand, title,
-                        result['url'], result['confidence'], result['source']
+            # If found something in tier1, don't search tier2/3
+            if tier_name == 'tier1' and results:
+                break
+        
+        return None
+    
+    def search_online(self, product: dict) -> Optional[dict]:
+        """Fallback to original search if improved search fails"""
+        
+        strategies = self.learning.get_search_strategies()
+        retailers = self.learning.get_top_retailers()
+        
+        # Add top retailers to search
+        search_sites = retailers[:3] if retailers else ['shoprite', 'checkers', 'pnp']
+        
+        for strategy in strategies:
+            for site in search_sites:
+                query = self.build_search_query(product, strategy, site)
+                
+                if not query:
+                    continue
+                
+                try:
+                    results = self.searcher.search_google_images(
+                        query, 
+                        num_results=self.config.get('search', {}).get('results_per_query', 3)
                     )
                     
-                    return {
-                        'path': downloaded['path'],
-                        'confidence': result['confidence']
-                    }
+                    if results:
+                        # Evaluate results
+                        best = self.evaluate_search_results(results, product)
+                        if best:
+                            best['search_strategy'] = strategy
+                            best['search_query'] = query
+                            return best
+                            
+                except Exception as e:
+                    logger.error(f"Search error for {product.get('Title', 'Unknown')}: {str(e)}")
+                    continue
         
         return None
     
-    def _get_retailer_priority(self, brand: str) -> List[str]:
-        """Get retailer priority based on brand and learning"""
+    def build_enhanced_search_query(self, product: dict, site: str = None, use_enhanced: bool = True) -> str:
+        """IMPROVED: Build search query with variant awareness"""
         
-        # Default priority
-        retailers = [
-            'checkers.co.za',
-            'shoprite.co.za',
-            'pnp.co.za',
-            'makro.co.za',
-            'woolworths.co.za',
-            'takealot.com'
-        ]
-        
-        # TODO: Adjust based on brand-specific success rates from learning
-        
-        return retailers
-    
-    async def _search_retailer(self, session: aiohttp.ClientSession, 
-                              product: Dict, retailer: str) -> Optional[Dict]:
-        """Search specific retailer"""
-        
-        barcode = product.get('Variant_Barcode', '')
-        brand = product.get('Brand', '')
         title = product.get('Title', '')
+        brand = product.get('Brand', '')
+        barcode = str(product.get('Variant_Barcode', ''))
+        variant = product.get('Variant_Title', '')
+        variant_option = product.get('Variant_option', '')
         
-        # Build query focusing on barcode and brand
-        if barcode and barcode != 'nan':
-            query = f'"{barcode}" "{brand}" site:{retailer}'
+        query_parts = []
+        
+        if use_enhanced:
+            # Enhanced query with variant details
+            if len(barcode) > 6:
+                # Primary: exact barcode
+                query_parts.append(f'"{barcode}"')
+            
+            # Add brand and variant details as secondary
+            if brand and (variant or variant_option):
+                variant_query = []
+                if brand:
+                    variant_query.append(f'"{brand}"')
+                if variant:
+                    variant_query.append(f'"{variant}"')
+                if variant_option and variant_option != variant:
+                    variant_query.append(f'"{variant_option}"')
+                
+                # Extract key descriptors from title (flavor, size, type)
+                title_tokens = title.replace(brand, '').strip().split()
+                for token in title_tokens:
+                    if any(x in token.lower() for x in ['g', 'ml', 'l', 'kg']):
+                        variant_query.append(token)  # Size
+                    elif len(token) > 3 and token not in brand:
+                        # Potential flavor/variant descriptor
+                        if any(x in token.lower() for x in ['vetkoek', 'flapjack', 'pancake', 'waffle']):
+                            variant_query.append(f'"{token}"')  # Critical variant
+                
+                if not barcode or len(barcode) <= 6:
+                    # No barcode, rely on variant query
+                    query_parts = variant_query
+                else:
+                    # Combine with OR for flexibility
+                    query_parts.append('OR')
+                    query_parts.append(f'({" ".join(variant_query)})')
         else:
-            query = f'"{brand}" "{title}" site:{retailer}'
+            # Fallback to simpler query
+            if len(barcode) > 6:
+                query_parts.append(f'"{barcode}"')
+            if brand:
+                query_parts.append(f'"{brand}"')
         
-        params = {
-            'engine': 'google_images',
-            'q': query,
-            'api_key': self.api_key,
-            'num': 10,
-            'gl': 'za',
-            'hl': 'en'
-        }
+        # Add site restriction
+        if site:
+            if '.' not in site:
+                site = f'{site}.co.za'
+            query_parts.append(f'site:{site}')
         
-        try:
-            url = f"https://serpapi.com/search?{urlencode(params)}"
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    for result in data.get('images_results', []):
-                        confidence = self._calculate_confidence(result, product, retailer)
-                        
-                        if confidence >= 50:
-                            return {
-                                'url': result.get('original') or result.get('link'),
-                                'confidence': confidence,
-                                'source': retailer,
-                                'description': '',  # Description scraping removed to save API credits
-                                'search_query': query,
-                                'image_source': result.get('source', retailer)
-                            }
-        except Exception as e:
-            logger.error(f"Search error for {retailer}: {str(e)}")
+        return ' '.join(query_parts) if query_parts else None
+    
+    def build_search_query(self, product: dict, strategy: str, site: str = None) -> str:
+        """Original search query builder for fallback"""
         
-        return None
+        title = product.get('Title', '')
+        brand = product.get('Brand', '')
+        barcode = str(product.get('Variant_Barcode', ''))
+        variant = product.get('Variant_Title', '')
+        
+        query_parts = []
+        
+        if strategy == 'barcode_brand':
+            if len(barcode) > 6:
+                query_parts.append(f'"{barcode}"')
+            if brand:
+                query_parts.append(f'"{brand}"')
+                
+        elif strategy == 'brand_title':
+            if brand:
+                query_parts.append(f'"{brand}"')
+            if title:
+                # Use key parts of title
+                title_parts = title.split()[:5]
+                query_parts.append(' '.join(title_parts))
+                
+        elif strategy == 'variant_specific':
+            if brand:
+                query_parts.append(f'"{brand}"')
+            if variant:
+                query_parts.append(f'"{variant}"')
+                
+        # Add site restriction
+        if site:
+            if '.' not in site:
+                site = f'{site}.co.za'
+            query_parts.append(f'site:{site}')
+        
+        return ' '.join(query_parts) if query_parts else None
+    
+    def evaluate_results_with_variant_matching(self, results: List[dict], product: dict, retailer: str) -> Optional[dict]:
+        """IMPROVED: Evaluate search results with variant awareness"""
+        
+        if not results:
+            return None
+        
+        title = product.get('Title', '').lower()
+        brand = (product.get('Brand', '') or '').lower()
+        sku = product.get('Variant_SKU', '')
+        variant = (product.get('Variant_Title', '') or '').lower()
+        variant_option = (product.get('Variant_option', '') or '').lower()
+        barcode = str(product.get('Variant_Barcode', ''))
+        
+        best_result = None
+        best_score = 0
+        
+        for result in results:
+            score = 0
+            result_title = result.get('title', '').lower()
+            result_snippet = result.get('snippet', '').lower()
+            source = result.get('source', '').lower()
+            
+            # Exact barcode match is gold standard
+            if len(barcode) > 6 and barcode in result_title + result_snippet:
+                score += 40
+            
+            # Brand matching (30% weight)
+            if brand:
+                if brand in result_title:
+                    score += 25
+                elif brand in source:
+                    score += 15
+            
+            # CRITICAL: Variant matching (40% weight)
+            variant_score = 0
+            if variant or variant_option:
+                # Check for variant mismatch (penalty)
+                critical_variants = ['vetkoek', 'flapjack', 'pancake', 'waffle', 'scone', 'muffin']
+                for cv in critical_variants:
+                    if cv in variant.lower() or cv in variant_option.lower():
+                        if cv in result_title:
+                            variant_score += 30  # Correct variant
+                        else:
+                            # Check if wrong variant present
+                            for other_cv in critical_variants:
+                                if other_cv != cv and other_cv in result_title:
+                                    variant_score -= 40  # Wrong variant - heavy penalty
+                                    logger.warning(f"Variant mismatch for {sku}: wanted '{cv}', got '{other_cv}'")
+                                    break
+                
+                # General variant matching
+                if variant and variant in result_title:
+                    variant_score += 20
+                if variant_option and variant_option != variant and variant_option in result_title:
+                    variant_score += 10
+            
+            score += variant_score
+            
+            # Size matching (15% weight)
+            size_pattern = r'\b(\d+(?:\.\d+)?\s*(?:g|kg|ml|l|L))\b'
+            title_sizes = re.findall(size_pattern, title)
+            result_sizes = re.findall(size_pattern, result_title)
+            if title_sizes and result_sizes:
+                if title_sizes[0] == result_sizes[0]:
+                    score += 15
+                else:
+                    score -= 10  # Size mismatch penalty
+            
+            # Retailer trust bonus (15% weight)
+            tier_bonuses = {'tier1': 15, 'tier2': 10, 'tier3': 5}
+            for tier, retailers in self.TRUSTED_RETAILERS.items():
+                if retailer in retailers:
+                    score += tier_bonuses.get(tier, 0)
+                    break
+            
+            # Apply learning adjustments
+            adjustments = self.confidence_adjustments.get(source, {})
+            if 'confidence_modifier' in adjustments:
+                score += adjustments['confidence_modifier']
+            
+            # Track best result
+            if score > best_score:
+                best_score = score
+                best_result = {
+                    'url': result.get('original') or result.get('link') or result.get('thumbnail'),  # CRITICAL FIX: Include URL!
+                    'title': result.get('title', ''),
+                    'source': result.get('source', ''),
+                    'snippet': result.get('snippet', ''),
+                    'confidence': min(max(score, 0), 100),
+                    'sku': sku,
+                    'variant_match_score': variant_score,
+                    'image_source': result.get('source', '')
+                }
+        
+        # Reject if variant mismatch is too severe
+        if best_result and best_result.get('variant_match_score', 0) < -20:
+            logger.warning(f"Rejecting result for {sku} due to variant mismatch")
+            return None
+        
+        return best_result if best_score > 35 else None
+    
+    def evaluate_search_results(self, results: List[dict], product: dict) -> Optional[dict]:
+        """Original evaluation for fallback"""
+        
+        if not results:
+            return None
+        
+        title = product.get('Title', '').lower()
+        brand = (product.get('Brand', '') or '').lower()
+        sku = product.get('Variant_SKU', '')
+        
+        best_result = None
+        best_score = 0
+        
+        for result in results:
+            score = 0
+            result_title = result.get('title', '').lower()
+            source = result.get('source', '').lower()
+            
+            # Brand matching
+            if brand and brand in result_title:
+                score += 40
+            if brand and brand in source:
+                score += 10
+            
+            # Title similarity
+            title_words = set(title.split())
+            result_words = set(result_title.split())
+            common_words = title_words.intersection(result_words)
+            if len(title_words) > 0:
+                score += (len(common_words) / len(title_words)) * 30
+            
+            # Source reliability
+            trusted_sources = ['shoprite', 'checkers', 'pnp', 'makro', 'takealot', 'game']
+            for trusted in trusted_sources:
+                if trusted in source:
+                    score += 20
+                    break
+            
+            # Apply learning adjustments
+            adjustments = self.confidence_adjustments.get(source, {})
+            if 'confidence_modifier' in adjustments:
+                score += adjustments['confidence_modifier']
+            
+            # Track best result
+            if score > best_score:
+                best_score = score
+                best_result = result
+                best_result['confidence'] = min(score, 100)
+                best_result['sku'] = sku
+        
+        return best_result if best_score > 30 else None
     
     async def _search_broad(self, session: aiohttp.ClientSession, product: Dict) -> Optional[Dict]:
         """Broader search as fallback"""
@@ -429,75 +717,95 @@ class IntelligentImageProcessor:
         """Download and save image to appropriate folder"""
         
         try:
-            connector = aiohttp.TCPConnector()
-            async with aiohttp.ClientSession(connector=connector) as session:
-                image_bytes = await downloader.fetch_image(session, url)
+            logger.info(f"Starting download from URL: {url}")
+            
+            # Download image using the downloader
+            image_bytes = await self.downloader.download_image(url)
                 
-                if not image_bytes:
-                    return {'success': False, 'path': None}
+            if not image_bytes:
+                logger.error(f"No image bytes returned from download")
+                return {'success': False, 'path': None}
+            
+            logger.info(f"Downloaded {len(image_bytes)} bytes")
                 
-                # Validate image
+            # Validate image using src module
+            try:
+                from src import img_utils
                 if not img_utils.is_valid_image(image_bytes, min_size=150):
+                    logger.error(f"Image validation failed")
                     return {'success': False, 'path': None}
+                logger.info(f"Image validation passed")
+            except ImportError:
+                logger.warning("img_utils not available, skipping validation")
+                # Continue without validation
                 
-                # Optimize image
-                optimized = img_utils.optimise(
-                    image_bytes,
-                    size=self.config['image']['size'],
-                    fmt='JPEG',
-                    max_kb=self.config['image']['max_kb']
-                )
-                
-                if not optimized:
-                    return {'success': False, 'path': None}
-                
-                # Determine folder based on confidence
-                if confidence >= self.confidence_adjustments['confidence_thresholds']['auto_approve']:
-                    folder = self.approved_dir
-                    status = 'approved'
-                elif confidence >= self.confidence_adjustments['confidence_thresholds']['needs_review']:
-                    folder = self.pending_dir
-                    status = 'pending'
-                else:
-                    folder = self.declined_dir
-                    status = 'declined'
-                
-                # Save image with UNIQUE filename to prevent collisions
-                brand = product.get('Brand', 'Unknown')
-                title = product.get('Title', 'Unknown')
-                sku = product.get('Variant_SKU', 'Unknown')
-                
-                brand_folder = folder / self.sanitize_filename(brand)
-                brand_folder.mkdir(exist_ok=True)
-                
-                # Create UNIQUE filename using SKU to prevent overwrites
-                safe_title = self.sanitize_filename(title)
-                safe_sku = self.sanitize_filename(sku)
-                filename = f"{safe_title}_{safe_sku}.jpg"
-                output_path = brand_folder / filename
-                
-                with open(output_path, 'wb') as f:
-                    f.write(optimized)
-                
-                # Save metadata (description field kept empty to save API credits)
-                metadata = {
-                    'product': title,
+            # Optimize image
+            optimized = img_utils.optimise(
+                image_bytes,
+                size=self.config['image']['size'],
+                fmt='JPEG',
+                max_kb=self.config['image']['max_kb']
+            )
+            
+            if not optimized:
+                return {'success': False, 'path': None}
+            
+            # Get product info for folder structure
+            brand = product.get('Brand', 'Unknown')
+            safe_brand = self.sanitize_filename(brand)
+            
+            # Determine status based on confidence
+            if confidence >= self.confidence_adjustments['confidence_thresholds']['auto_approve']:
+                status = 'approved'
+                destination_dir = self.approved_dir / safe_brand
+            elif confidence >= self.confidence_adjustments['confidence_thresholds']['needs_review']:
+                status = 'pending'  # Will be validated by CLIP
+                destination_dir = self.pending_dir / safe_brand
+            else:
+                status = 'declined'
+                destination_dir = self.declined_dir / safe_brand
+            
+            # Save image with UNIQUE filename to prevent collisions  
+            title = product.get('Title', 'Unknown')
+            sku = product.get('Variant_SKU', 'Unknown')
+            
+            brand_folder = destination_dir
+            brand_folder.mkdir(parents=True, exist_ok=True)
+            
+            # CRITICAL FIX: Always include SKU in filename to guarantee uniqueness
+            safe_title = self.sanitize_filename(title)[:100]  # Limit title length
+            safe_sku = self.sanitize_filename(sku)
+            # Format: Title_SKU.jpg - SKU guarantees uniqueness even for variants
+            filename = f"{safe_title}_{safe_sku}.jpg"
+            output_path = brand_folder / filename
+            
+            with open(output_path, 'wb') as f:
+                f.write(optimized)
+            
+            # Save metadata 
+            metadata = {
+                    'sku': sku,
+                    'title': title,
                     'brand': brand,
-                    'barcode': product.get('Variant_Barcode', ''),
-                    'confidence': confidence,
                     'source': source,
-                    'url': url,
-                    'description': description,  # Usually empty to save credits
+                    'source_url': image_source if image_source else url,  # Store full URL
+                    'confidence': confidence,
+                    'description': description,
+                    'downloaded_at': datetime.now().isoformat(),
                     'search_query': search_query,
-                    'image_source': image_source,
-                    'downloaded_at': datetime.now().isoformat()
+                    'image_url': url  # Original image URL
                 }
-                
-                meta_path = output_path.with_suffix('.json')
-                with open(meta_path, 'w') as f:
-                    json.dump(metadata, f, indent=2)
-                
-                # Update database with enhanced metadata
+            
+            meta_path = output_path.with_suffix('.json')
+            with open(meta_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            
+            # Update database with enhanced metadata
+            logger.info(f"Updating database for SKU: {product['Variant_SKU']}")
+            logger.info(f"  Path: {str(output_path)}")
+            logger.info(f"  Status: {status}")
+            
+            try:
                 self.db.update_product_image(
                     product['Variant_SKU'],
                     str(output_path),
@@ -506,63 +814,115 @@ class IntelligentImageProcessor:
                     status,
                     description,
                     search_query,
-                    image_source
+                    image_source if image_source else url
                 )
-                
-                logger.info(f"  ✓ Saved to {folder.name}: {filename} ({confidence:.0f}%)")
-                
-                return {'success': True, 'path': str(output_path)}
+                logger.info(f"Database updated successfully for {product['Variant_SKU']}")
+            except Exception as db_err:
+                logger.error(f"Database update failed for {product['Variant_SKU']}: {str(db_err)}")
+                raise
+            
+            logger.info(f"  Saved to {destination_dir.name}: {filename} ({confidence:.0f}%)")
+            
+            return {'success': True, 'path': str(output_path)}
                 
         except Exception as e:
             logger.error(f"Download error: {str(e)}")
             return {'success': False, 'path': None}
     
-    async def process_batch(self, products: List[Dict], progress_callback=None) -> Dict:
-        """Process a batch of products"""
+    def process_batch(self, products: List[dict], progress_callback=None) -> dict:
+        """Process a batch of products with CLIP validation"""
         
         results = {
-            'processed': 0,
-            'found_local': 0,
-            'found_cached': 0,
-            'found_online': 0,
-            'not_found': 0,
-            'errors': 0
+            'success': 0,
+            'failed': 0,
+            'skipped': 0,
+            'errors': [],
+            'validated': 0
         }
         
-        for i, product in enumerate(products):
-            try:
-                result = await self.process_product(product)
-                
-                results['processed'] += 1
-                results[result['status']] = results.get(result['status'], 0) + 1
-                
-                if progress_callback:
-                    progress_callback({
-                        'current': i + 1,
-                        'total': len(products),
-                        'product': product.get('Title', 'Unknown'),
-                        'status': result['status'],
-                        'confidence': result.get('confidence', 0)
-                    })
-                
-                # Small delay to be respectful
-                await asyncio.sleep(0.5)
-                
-            except Exception as e:
-                logger.error(f"Error processing {product.get('Title', 'Unknown')}: {str(e)}")
-                results['errors'] += 1
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         
-        # Reload confidence adjustments after batch
-        self.confidence_adjustments = self._load_confidence_adjustments()
+        try:
+            loop.run_until_complete(
+                self._process_batch_async(products, results, progress_callback)
+            )
+            
+            # After processing, run CLIP validation on successful images
+            if results['success'] > 0:
+                self._run_clip_validation(products, results)
+                
+        finally:
+            loop.close()
         
         return results
     
+    async def _process_batch_async(self, products: List[dict], results: dict, progress_callback=None):
+        """Async processing of product batch"""
+        
+        total_products = len(products)
+        
+        for i, product in enumerate(products):
+            try:
+                if progress_callback:
+                    progress_callback(i + 1, total_products, f"Processing {product.get('Variant_SKU', 'Unknown')}")
+                
+                # Search for image
+                image_result = await self.search_product_image(product)
+                
+                if image_result and image_result.get('success'):
+                    results['success'] += 1
+                else:
+                    results['failed'] += 1
+                    if image_result and image_result.get('error'):
+                        results['errors'].append(f"SKU {product.get('Variant_SKU')}: {image_result['error']}")
+                
+            except Exception as e:
+                results['failed'] += 1
+                results['errors'].append(f"SKU {product.get('Variant_SKU')}: {str(e)}")
+                logger.error(f"Error processing product {product.get('Variant_SKU')}: {str(e)}")
+    
+    def _run_clip_validation(self, products: List[dict], results: dict):
+        """Run CLIP validation on processed images"""
+        try:
+            # Import CLIP validator (lazy load)
+            from clip_validator import CLIPValidator
+            
+            # Get products that were successfully processed
+            products_to_validate = []
+            for product in products:
+                sku = product.get('Variant_SKU')
+                # Check if image was downloaded
+                cursor = self.db.conn.cursor()
+                cursor.execute(
+                    "SELECT downloaded_image_path FROM products WHERE Variant_SKU = ? AND downloaded_image_path IS NOT NULL",
+                    (sku,)
+                )
+                row = cursor.fetchone()
+                cursor.close()
+                
+                if row and row[0]:
+                    product['downloaded_image_path'] = row[0]
+                    products_to_validate.append(product)
+            
+            if products_to_validate:
+                logger.info(f"Running CLIP validation on {len(products_to_validate)} images")
+                validator = CLIPValidator(config={'update_database': True})
+                validation_results = validator.validate_batch(products_to_validate)
+                results['validated'] = validation_results['validated']
+                logger.info(f"CLIP validation complete: {validation_results['auto_approved']} approved, {validation_results['needs_review']} need review")
+                
+        except ImportError:
+            logger.warning("CLIP validator not available - skipping validation")
+        except Exception as e:
+            logger.error(f"CLIP validation error: {str(e)}")
+    
     def move_to_approved(self, sku: str) -> bool:
-        """Move INDIVIDUAL image from pending to approved (NOT entire folders)"""
+        """Move INDIVIDUAL image from pending to approved - FIXED to prevent corruption"""
         
         logger.info(f"Moving single image to approved for SKU: {sku}")
         
-        # Get the SPECIFIC product
+        # Get the SPECIFIC product - use thread-safe method
         product = self.db.get_product_by_sku(sku)
         if not product or not product['downloaded_image_path']:
             logger.warning(f"No product or image path found for SKU: {sku}")
@@ -576,86 +936,229 @@ class IntelligentImageProcessor:
             return False
         
         if current_path.is_dir():
-            logger.error(f"Path is a directory, not a file. This should not happen: {current_path}")
+            logger.error(f"CRITICAL ERROR: Path is a directory, not a file: {current_path}")
             return False
         
-        # SAFETY CHECK: Ensure the file belongs to this specific SKU
-        title = product.get('Title', 'Unknown')
-        safe_title = self.sanitize_filename(title)
-        safe_sku = self.sanitize_filename(sku)
-        expected_filename = f"{safe_title}_{safe_sku}.jpg"
-        
-        # Also check old format for backwards compatibility
-        old_expected_filename = self.sanitize_filename(title) + '.jpg'
-        
-        if current_path.name != expected_filename and current_path.name != old_expected_filename:
-            logger.warning(f"Filename mismatch for SKU {sku}. Expected: {expected_filename}, Got: {current_path.name}")
-            logger.info(f"This may be due to filename format update - continuing with move")
-        
-        # Create new path in approved folder
-        brand = product.get('Brand', 'Unknown')
-        brand_folder = self.approved_dir / self.sanitize_filename(brand)
-        brand_folder.mkdir(exist_ok=True)
-        
-        new_path = brand_folder / current_path.name
-        
-        # SAFETY: Check if target already exists
-        if new_path.exists():
-            logger.warning(f"Target file already exists, will overwrite: {new_path}")
-        
         try:
-            # Move ONLY the specific image file
-            current_path.rename(new_path)
-            logger.info(f"✓ Moved image file: {current_path} → {new_path}")
+            # Move to approved folder
+            brand = product.get('Brand', 'Unknown')
+            brand_folder = self.approved_dir / self.sanitize_filename(brand)
+            brand_folder.mkdir(exist_ok=True)
             
-            # Move ONLY the corresponding metadata file if exists
+            # Ensure filename includes SKU for new location
+            safe_sku = self.sanitize_filename(sku)
+            if safe_sku in current_path.name:
+                # Already has SKU, keep the name
+                new_filename = current_path.name
+            else:
+                # Add SKU to filename for safety
+                title = product.get('Title', 'Unknown')
+                safe_title = self.sanitize_filename(title)[:100]
+                new_filename = f"{safe_title}_{safe_sku}.jpg"
+            
+            new_path = brand_folder / new_filename
+            
+            # Handle existing file
+            if new_path.exists() and new_path != current_path:
+                new_path.unlink()  # Remove existing approved file
+            
+            # Move file
+            current_path.rename(new_path)
+            logger.info(f"✓ Moved to approved: {current_path} → {new_path}")
+            
+            # Move metadata if exists
             current_meta = current_path.with_suffix('.json')
             if current_meta.exists() and current_meta.is_file():
                 new_meta = new_path.with_suffix('.json')
+                if new_meta.exists():
+                    new_meta.unlink()
                 current_meta.rename(new_meta)
-                logger.info(f"✓ Moved metadata file: {current_meta} → {new_meta}")
             
-            # Update database for THIS SPECIFIC SKU ONLY
-            self.db.cursor.execute('''
-                UPDATE products SET 
-                    downloaded_image_path = ?,
-                    image_status = 'approved',
-                    approved_date = ?
-                WHERE Variant_SKU = ?
-            ''', (str(new_path), datetime.now(), sku))
-            self.db.conn.commit()
+            # Update database for ONLY this SKU
+            cursor = self.db.conn.cursor()
+            try:
+                cursor.execute('''
+                    UPDATE products SET 
+                        downloaded_image_path = ?,
+                        image_status = 'approved',
+                        updated_at = ?
+                    WHERE Variant_SKU = ? AND Variant_SKU = ?
+                ''', (str(new_path), datetime.now(), sku, sku))  # Double-check SKU
+                
+                # Verify only one row was updated
+                if cursor.rowcount != 1:
+                    logger.error(f"WARNING: Updated {cursor.rowcount} rows for SKU {sku}")
+                    if cursor.rowcount > 1:
+                        # Rollback if multiple rows affected
+                        self.db.conn.rollback()
+                        return False
+                
+                self.db.conn.commit()
+                logger.info(f"✓ Database updated for SKU: {sku}")
+            finally:
+                cursor.close()
             
-            logger.info(f"✓ Successfully moved single image for SKU: {sku}")
             return True
             
         except Exception as e:
             logger.error(f"Error moving image for SKU {sku}: {str(e)}")
+            self.db.conn.rollback()
             return False
     
-    def move_to_declined(self, sku: str) -> bool:
-        """Move image to declined and optionally delete"""
+    def move_to_pending(self, sku: str) -> bool:
+        """Move image from approved back to pending"""
         
+        logger.info(f"Moving image to pending for SKU: {sku}")
+        
+        # Get specific product
         product = self.db.get_product_by_sku(sku)
         if not product or not product['downloaded_image_path']:
+            logger.warning(f"No product or image path for SKU: {sku}")
             return False
         
         current_path = Path(product['downloaded_image_path'])
-        if current_path.exists():
+        
+        # Verify it's a file
+        if not current_path.exists():
+            logger.warning(f"Image file does not exist: {current_path}")
+            return False
+        
+        if current_path.is_dir():
+            logger.error(f"Path is directory: {current_path}")
+            return False
+        
+        try:
+            # Move to pending folder
+            brand = product.get('Brand', 'Unknown')
+            brand_folder = self.pending_dir / self.sanitize_filename(brand)
+            brand_folder.mkdir(exist_ok=True)
+            
+            # Ensure filename has SKU
+            safe_sku = self.sanitize_filename(sku)
+            if safe_sku in current_path.name:
+                new_filename = current_path.name
+            else:
+                title = product.get('Title', 'Unknown')
+                safe_title = self.sanitize_filename(title)[:100]
+                new_filename = f"{safe_title}_{safe_sku}.jpg"
+            
+            new_path = brand_folder / new_filename
+            
+            # Handle existing file
+            if new_path.exists() and new_path != current_path:
+                new_path.unlink()
+            
+            # Move file
+            current_path.rename(new_path)
+            logger.info(f"✓ Moved to pending: {current_path} → {new_path}")
+            
+            # Move metadata if exists
+            current_meta = current_path.with_suffix('.json')
+            if current_meta.exists() and current_meta.is_file():
+                new_meta = new_path.with_suffix('.json')
+                if new_meta.exists():
+                    new_meta.unlink()
+                current_meta.rename(new_meta)
+            
+            # Update database
+            cursor = self.db.conn.cursor()
+            try:
+                cursor.execute('''
+                    UPDATE products SET 
+                        downloaded_image_path = ?,
+                        image_status = 'pending'
+                    WHERE Variant_SKU = ?
+                ''', (str(new_path), sku))
+                
+                self.db.conn.commit()
+                logger.info(f"✓ Database updated for SKU: {sku}")
+            finally:
+                cursor.close()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error moving image to pending for SKU {sku}: {str(e)}")
+            self.db.conn.rollback()
+            return False
+    
+    def move_to_declined(self, sku: str) -> bool:
+        """Move image to declined - FIXED to prevent affecting other products"""
+        
+        logger.info(f"Moving image to declined for SKU: {sku}")
+        
+        # Get specific product - thread-safe
+        product = self.db.get_product_by_sku(sku)
+        if not product or not product['downloaded_image_path']:
+            logger.warning(f"No product or image path for SKU: {sku}")
+            return False
+        
+        current_path = Path(product['downloaded_image_path'])
+        
+        # Verify it's a file
+        if not current_path.exists():
+            logger.warning(f"Image file does not exist: {current_path}")
+            # Still update database to declined status
+            self.db.decline_image(sku)
+            return True
+        
+        if current_path.is_dir():
+            logger.error(f"CRITICAL ERROR: Path is directory: {current_path}")
+            return False
+        
+        try:
             # Move to declined folder
             brand = product.get('Brand', 'Unknown')
             brand_folder = self.declined_dir / self.sanitize_filename(brand)
             brand_folder.mkdir(exist_ok=True)
             
-            new_path = brand_folder / current_path.name
-            current_path.rename(new_path)
+            # Ensure filename has SKU
+            safe_sku = self.sanitize_filename(sku)
+            if safe_sku in current_path.name:
+                new_filename = current_path.name
+            else:
+                title = product.get('Title', 'Unknown')
+                safe_title = self.sanitize_filename(title)[:100]
+                new_filename = f"{safe_title}_{safe_sku}.jpg"
             
-            # Move metadata
+            new_path = brand_folder / new_filename
+            
+            # Handle existing file
+            if new_path.exists() and new_path != current_path:
+                new_path.unlink()  # Remove old declined file
+            
+            # Move file
+            current_path.rename(new_path)
+            logger.info(f"✓ Moved to declined: {current_path} → {new_path}")
+            
+            # Move metadata if exists
             current_meta = current_path.with_suffix('.json')
-            if current_meta.exists():
+            if current_meta.exists() and current_meta.is_file():
                 new_meta = new_path.with_suffix('.json')
+                if new_meta.exists():
+                    new_meta.unlink()
                 current_meta.rename(new_meta)
-        
-        # Update database
-        self.db.decline_image(sku)
-        
-        return True
+            
+            # Update database for ONLY this SKU
+            cursor = self.db.conn.cursor()
+            try:
+                cursor.execute('''
+                    UPDATE products SET 
+                        downloaded_image_path = ?,
+                        image_status = 'declined'
+                    WHERE Variant_SKU = ?
+                ''', (str(new_path), sku))
+                
+                if cursor.rowcount != 1:
+                    logger.error(f"WARNING: Updated {cursor.rowcount} rows for SKU {sku}")
+                
+                self.db.conn.commit()
+            finally:
+                cursor.close()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error declining image for SKU {sku}: {str(e)}")
+            self.db.conn.rollback()
+            return False

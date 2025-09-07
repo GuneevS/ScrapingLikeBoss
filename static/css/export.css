@@ -1,0 +1,73 @@
+/* Export Page Specific Styles */
+.export-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.export-stat {
+    text-align: center;
+}
+
+.export-progress-container {
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    padding: 1.5rem;
+    margin-top: 2rem;
+}
+
+.export-progress-status {
+    text-align: center;
+    margin-bottom: 1rem;
+}
+
+.batch-item {
+    padding: 1rem;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    margin-bottom: 1rem;
+}
+
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: none;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.select-all-label {
+    display: block;
+    margin-bottom: 1rem;
+}
+
+.export-actions {
+    margin-top: 2rem;
+    text-align: center;
+}
+
+.export-btn {
+    padding: 1rem 3rem;
+    font-size: 1.1rem;
+}
+
+.export-result-hidden {
+    display: none;
+}
+
+.download-section {
+    text-align: center;
+    margin: 2rem 0;
+}
+
+.download-btn {
+    padding: 1rem 2rem;
+}

@@ -6,7 +6,7 @@
 ./START.sh
 ```
 
-**Opens automatically at:** `http://localhost:5001`
+**Opens automatically at:** `http://localhost:8847`
 
 ---
 
@@ -36,21 +36,21 @@ A professional web-based image management system for NWK's ecommerce product cat
 - Get key from: https://serpapi.com/
 
 ### **3. Basic Workflow:**
-1. **Import** - Upload Excel file at: http://localhost:5001/import
-2. **Process** - Start image processing at: http://localhost:5001/
-3. **Review** - Approve/decline images at: http://localhost:5001/review
-4. **Export** - Download results at: http://localhost:5001/export
+1. **Import** - Upload Excel file at: http://localhost:8847/import
+2. **Process** - Start image processing at: http://localhost:8847/
+3. **Review** - Approve/decline images at: http://localhost:8847/review
+4. **Export** - Download results at: http://localhost:8847/export
 
 ---
 
 ## 🌐 **Web Interface**
 
 ### **Available Pages:**
-- **🏠 Dashboard:** `http://localhost:5001/` - Statistics, processing controls
-- **📤 Import:** `http://localhost:5001/import` - Upload Excel files
-- **🔍 Review:** `http://localhost:5001/review` - Approve/decline images
-- **📥 Export:** `http://localhost:5001/export` - Download results
-- **⚙️ Management:** `http://localhost:5001/management` - System controls
+- **🏠 Dashboard:** `http://localhost:8847/` - Statistics, processing controls
+- **📤 Import:** `http://localhost:8847/import` - Upload Excel files
+- **🔍 Review:** `http://localhost:8847/review` - Approve/decline images
+- **📥 Export:** `http://localhost:8847/export` - Download results
+- **⚙️ Management:** `http://localhost:8847/management` - System controls
 
 ### **Enhanced Features:**
 - ✅ **Full Product Names** - No text truncation

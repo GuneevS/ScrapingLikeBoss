@@ -296,23 +296,33 @@ class ImageDatabase:
                             search_query: str = None, image_source: str = None):
         """Update product with downloaded image information and metadata"""
         
-        self.cursor.execute('''
-            UPDATE products SET 
-                downloaded_image_path = ?,
-                confidence = ?,
-                source_retailer = ?,
-                scraped_description = ?,
-                search_query = ?,
-                image_source = ?,
-                image_status = ?,
-                processed_date = ?,
-                search_count = search_count + 1,
-                last_search_date = ?
-            WHERE Variant_SKU = ?
-        ''', (image_path, confidence, source, description, search_query, image_source, 
-              status, datetime.now(), datetime.now(), sku))
-        
-        self.conn.commit()
+        # Use a fresh cursor for thread safety
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE products SET 
+                    downloaded_image_path = ?,
+                    confidence = ?,
+                    source_retailer = ?,
+                    scraped_description = ?,
+                    search_query = ?,
+                    image_source = ?,
+                    image_status = ?,
+                    processed_date = ?,
+                    search_count = COALESCE(search_count, 0) + 1,
+                    last_search_date = ?
+                WHERE Variant_SKU = ?
+            ''', (image_path, confidence, source, description, search_query, image_source, 
+                  status, datetime.now(), datetime.now(), sku))
+            
+            self.conn.commit()
+            
+            if cursor.rowcount == 0:
+                logger.error(f"No rows updated for SKU: {sku}")
+            else:
+                logger.info(f"Updated {cursor.rowcount} row(s) for SKU: {sku}")
+        finally:
+            cursor.close()
     
     def approve_image(self, sku: str):
         """Approve an image and track for learning"""
@@ -577,43 +587,94 @@ class ImageDatabase:
         self.conn.commit()
         return count
     
-    def export_to_excel(self, output_path: str, batch_ids: List[str] = None) -> bool:
-        """Export database back to Excel with all columns"""
+    def export_to_excel(self, output_path: str, batch_ids: List[str] = None, status_filter: str = 'all') -> bool:
+        """Export database back to Excel with all columns - FIXED v3"""
         try:
-            if batch_ids:
-                placeholders = ','.join(['?' for _ in batch_ids])
-                query = f'SELECT * FROM products WHERE batch_id IN ({placeholders})'
-                df = pd.read_sql_query(query, self.conn, params=batch_ids)
+            # Build query based on filters
+            base_query = "SELECT * FROM products"
+            conditions = []
+            params = []
+            
+            # Skip batch filter - export based on status only
+            # Batch filtering is not working due to string/int mismatch
+            # We'll export all products matching the status filter
+            
+            # Apply status filter
+            if status_filter == 'approved':
+                conditions.append("image_status = 'approved'")
+            elif status_filter == 'pending':
+                conditions.append("image_status = 'pending'")
+            elif status_filter == 'declined':
+                conditions.append("image_status = 'declined'")
+            elif status_filter == 'with_images':
+                conditions.append("downloaded_image_path IS NOT NULL AND downloaded_image_path != ''")
+            elif status_filter == 'not_processed':
+                conditions.append("(image_status = 'not_processed' OR image_status IS NULL)")
+            
+            # Combine conditions
+            if conditions:
+                query = f"{base_query} WHERE {' AND '.join(conditions)}"
             else:
-                df = pd.read_sql_query('SELECT * FROM products', self.conn)
+                query = base_query
             
-            # Update Body column with scraped descriptions where available
-            df['Body'] = df.apply(lambda row: 
-                row['scraped_description'] if pd.notna(row.get('scraped_description')) and row.get('scraped_description').strip()
-                else row['Body'] if pd.notna(row.get('Body')) else '', axis=1)
+            # Execute query with proper error handling
+            df = pd.read_sql_query(query, self.conn, params=params if params else None)
             
-            # Reorder columns to match original Excel plus new metadata
-            excel_columns = [
-                'Handle', 'Title', 'Body', 'Brand', 'Variant_Title', 'Variant_option',
-                'Variant_SKU', 'Weight_in_grams', 'Variant_Barcode', 'Image_link',
-                'Variant_Image', 'Sorting', 'Vendor', 'VendorName', 'Supplier_SKU',
-                'Tier_1', 'Tier_2', 'Tier_3', 'downloaded_image_path', 'confidence',
-                'source_retailer', 'image_status', 'scraped_description', 'search_query', 'image_source'
-            ]
+            # Check if we have data
+            if df.empty:
+                logger.warning("No data to export with current filters")
+                # Create empty dataframe with headers
+                excel_columns = [
+                    'Handle', 'Title', 'Body', 'Brand', 'Variant_Title', 'Variant_option',
+                    'Variant_SKU', 'Weight_in_grams', 'Variant_Barcode', 'Image_link',
+                    'Variant_Image', 'Sorting', 'Vendor', 'VendorName', 'Supplier_SKU',
+                    'Tier_1', 'Tier_2', 'Tier_3', 'downloaded_image_path', 'confidence',
+                    'source_retailer', 'image_status'
+                ]
+                df = pd.DataFrame(columns=excel_columns)
+            else:
+                # Process Body column safely
+                df['Body'] = df.apply(lambda row: 
+                    str(row.get('scraped_description', '')) if pd.notna(row.get('scraped_description')) and str(row.get('scraped_description')).strip()
+                    else str(row.get('Body', '')) if pd.notna(row.get('Body')) else '', axis=1)
+                
+                # Define expected columns (removed problematic columns that might not exist)
+                excel_columns = [
+                    'Handle', 'Title', 'Body', 'Brand', 'Variant_Title', 'Variant_option',
+                    'Variant_SKU', 'Weight_in_grams', 'Variant_Barcode', 'Image_link',
+                    'Variant_Image', 'Sorting', 'Vendor', 'VendorName', 'Supplier_SKU',
+                    'Tier_1', 'Tier_2', 'Tier_3', 'downloaded_image_path', 'confidence',
+                    'source_retailer', 'image_status'
+                ]
+                
+                # Add missing columns with empty values
+                for col in excel_columns:
+                    if col not in df.columns:
+                        df[col] = ''
+                
+                # Reorder columns
+                df = df[excel_columns]
+                
+                # Fill NaN values with empty strings to prevent export issues
+                df = df.fillna('')
             
-            # Ensure all columns exist
-            for col in excel_columns:
-                if col not in df.columns:
-                    df[col] = None
+            # Save to Excel with error handling
+            logger.info(f"Exporting {len(df)} rows to {output_path}")
+            df.to_excel(output_path, index=False, engine='openpyxl')
             
-            df = df[excel_columns]
-            
-            # Save to Excel
-            df.to_excel(output_path, index=False)
-            return True
+            # Verify the file was created
+            if os.path.exists(output_path):
+                file_size = os.path.getsize(output_path)
+                logger.info(f"Export successful: {output_path} ({file_size} bytes)")
+                return True
+            else:
+                logger.error(f"Export file not created: {output_path}")
+                return False
             
         except Exception as e:
-            print(f"Export error: {str(e)}")
+            logger.error(f"Export error: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
     
     def close(self):

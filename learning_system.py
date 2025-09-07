@@ -178,8 +178,20 @@ class LearningSystem:
         logger.info(f"Best strategy: {best_strategy} (success rate: {best_rate:.2%})")
         return best_strategy
     
+    def get_search_strategies(self) -> Dict:
+        """Get current search strategies with success rates"""
+        return self.patterns.get('search_strategies', {
+            'barcode_first': {'success': 0, 'total': 0},
+            'brand_title': {'success': 0, 'total': 0}, 
+            'retailer_specific': {'success': 0, 'total': 0}
+        })
+    
+    def get_top_retailers(self) -> List[str]:
+        """Get top performing retailers"""
+        return self.get_best_retailers()
+    
     def get_overall_success_rate(self) -> float:
-        """Calculate overall system success rate"""
+        """Calculate overall success rate from patterns"""
         
         total_success = sum(s['success'] for s in self.patterns['search_strategies'].values())
         total_attempts = sum(s['total'] for s in self.patterns['search_strategies'].values())
