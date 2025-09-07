@@ -54,38 +54,108 @@ pip install --upgrade pip -q
 # Install ALL dependencies from requirements.txt
 echo "📋 Installing complete dependency stack..."
 if [ -f "requirements.txt" ]; then
+    # Install base requirements first
     pip install -r requirements.txt -q
     echo "   ✅ Complete requirements.txt installed"
 else
     echo "⚠️  Installing essential dependencies..."
     pip install flask werkzeug pandas openpyxl pyyaml python-dotenv aiohttp pillow -q
     pip install requests beautifulsoup4 selenium tqdm imagehash scikit-image numpy -q
-    pip install flask-cors torch torchvision ftfy regex easyocr -q
-    pip install git+https://github.com/openai/CLIP.git -q
+    pip install flask-cors -q
 fi
 
-# Initialize database if needed
-if [ ! -f data/products.db ]; then
-    echo "Initializing database..."
-    python -c "from database import ProductDatabase; db = ProductDatabase('data/products.db'); print('Database initialized')" 2>/dev/null || true
-fi
+# Install CLIP and its dependencies
+echo "🤖 Installing CLIP model and dependencies..."
+echo "   This may take a few minutes on first install (~2GB)..."
+
+# Check if PyTorch is installed, if not install it
+python3 -c "import torch" 2>/dev/null || {
+    echo "   📦 Installing PyTorch..."
+    pip install torch torchvision torchaudio -q
+}
+
+# Install CLIP dependencies
+echo "   📦 Installing CLIP dependencies..."
+pip install ftfy regex tqdm -q
+
+# Install CLIP from GitHub
+echo "   📦 Installing CLIP model..."
+pip install git+https://github.com/openai/CLIP.git -q
+
+# Install EasyOCR for text extraction
+echo "   📦 Installing EasyOCR for text extraction..."
+pip install easyocr opencv-python -q
+
+echo "   ✅ CLIP and dependencies installed"
+
+# Initialize database with correct path
+echo "💾 Initializing database..."
+python3 << 'EOF'
+from database import ImageDatabase
+import os
+
+# Ensure data directory exists
+os.makedirs('data', exist_ok=True)
+
+# Initialize with correct path
+db = ImageDatabase('data/products.db')
+print("   ✅ Database initialized at data/products.db")
+
+# Quick verification
+cursor = db.conn.cursor()
+cursor.execute("SELECT COUNT(*) FROM products")
+count = cursor.fetchone()[0]
+print(f"   📊 Database contains {count} products")
+cursor.close()
+EOF
 
 # Clear any stale lock files
 rm -f data/*.db-journal 2>/dev/null || true
 rm -f data/*.db-wal 2>/dev/null || true
 
-# Check CLIP model availability
-echo "🤖 Checking CLIP model..."
-python3 -c "
-import torch
-import clip
+# Initialize and test CLIP model
+echo "🤖 Initializing CLIP model..."
+python3 << 'EOF'
+import sys
 try:
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model, preprocess = clip.load('ViT-B/32', device=device)
-    print(f'   ✅ CLIP model loaded on {device}')
+    import torch
+    import clip
+    from PIL import Image
+    import numpy as np
+    
+    # Detect best available device
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+        device_name = "Apple Silicon GPU (MPS)"
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+        device_name = "NVIDIA GPU (CUDA)"
+    else:
+        device = torch.device("cpu")
+        device_name = "CPU"
+    
+    print(f"   🔧 Using device: {device_name}")
+    
+    # Load CLIP model (this downloads it if not cached)
+    print("   ⏳ Loading CLIP model (ViT-B/32)...")
+    model, preprocess = clip.load("ViT-B/32", device=device)
+    print("   ✅ CLIP model loaded and ready")
+    
+    # Quick test to ensure it works
+    test_text = clip.tokenize(["a product image"]).to(device)
+    with torch.no_grad():
+        text_features = model.encode_text(test_text)
+    print("   ✅ CLIP validation test passed")
+    
+except ImportError as e:
+    print(f"   ❌ CLIP dependencies missing: {e}")
+    print("   Run: pip install torch torchvision ftfy regex")
+    print("   Run: pip install git+https://github.com/openai/CLIP.git")
+    sys.exit(1)
 except Exception as e:
-    print(f'   ⚠️  CLIP model will download on first use: {e}')
-" 2>/dev/null || echo "   ⚠️  CLIP model will be downloaded when needed"
+    print(f"   ⚠️  CLIP initialization warning: {e}")
+    print("   CLIP will initialize on first use")
+EOF
 
 # Check for .env file with all required settings
 if [ ! -f .env ]; then
