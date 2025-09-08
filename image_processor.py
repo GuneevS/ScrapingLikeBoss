@@ -424,101 +424,42 @@ class IntelligentImageProcessor:
         return None
     
     def build_enhanced_search_query(self, product: dict, site: str = None, use_enhanced: bool = True) -> str:
-        """IMPROVED: Build search query with variant awareness"""
+        """Build search query using EXACT product title ONLY - NO BARCODE"""
         
         title = product.get('Title', '')
-        brand = product.get('Brand', '')
-        barcode = str(product.get('Variant_Barcode', ''))
-        variant = product.get('Variant_Title', '')
-        variant_option = product.get('Variant_option', '')
         
-        query_parts = []
-        
-        if use_enhanced:
-            # Enhanced query with variant details
-            if len(barcode) > 6:
-                # Primary: exact barcode
-                query_parts.append(f'"{barcode}"')
+        # USE EXACT PRODUCT TITLE ONLY - NO BARCODE
+        if not title:
+            return None
             
-            # Add brand and variant details as secondary
-            if brand and (variant or variant_option):
-                variant_query = []
-                if brand:
-                    variant_query.append(f'"{brand}"')
-                if variant:
-                    variant_query.append(f'"{variant}"')
-                if variant_option and variant_option != variant:
-                    variant_query.append(f'"{variant_option}"')
-                
-                # Extract key descriptors from title (flavor, size, type)
-                title_tokens = title.replace(brand, '').strip().split()
-                for token in title_tokens:
-                    if any(x in token.lower() for x in ['g', 'ml', 'l', 'kg']):
-                        variant_query.append(token)  # Size
-                    elif len(token) > 3 and token not in brand:
-                        # Potential flavor/variant descriptor
-                        if any(x in token.lower() for x in ['vetkoek', 'flapjack', 'pancake', 'waffle']):
-                            variant_query.append(f'"{token}"')  # Critical variant
-                
-                if not barcode or len(barcode) <= 6:
-                    # No barcode, rely on variant query
-                    query_parts = variant_query
-                else:
-                    # Combine with OR for flexibility
-                    query_parts.append('OR')
-                    query_parts.append(f'({" ".join(variant_query)})')
-        else:
-            # Fallback to simpler query
-            if len(barcode) > 6:
-                query_parts.append(f'"{barcode}"')
-            if brand:
-                query_parts.append(f'"{brand}"')
+        query = title  # Use the exact product name as-is
         
-        # Add site restriction
+        # Add site restriction if specified
         if site:
             if '.' not in site:
                 site = f'{site}.co.za'
-            query_parts.append(f'site:{site}')
+            query = f'{query} site:{site}'
         
-        return ' '.join(query_parts) if query_parts else None
+        return query
     
     def build_search_query(self, product: dict, strategy: str, site: str = None) -> str:
-        """Original search query builder for fallback"""
+        """Build search query using EXACT product title ONLY - NO BARCODE"""
         
         title = product.get('Title', '')
-        brand = product.get('Brand', '')
-        barcode = str(product.get('Variant_Barcode', ''))
-        variant = product.get('Variant_Title', '')
         
-        query_parts = []
+        # USE EXACT PRODUCT TITLE ONLY - NO BARCODE
+        if not title:
+            return None
+            
+        query = title  # Use the exact product name as-is regardless of strategy
         
-        if strategy == 'barcode_brand':
-            if len(barcode) > 6:
-                query_parts.append(f'"{barcode}"')
-            if brand:
-                query_parts.append(f'"{brand}"')
-                
-        elif strategy == 'brand_title':
-            if brand:
-                query_parts.append(f'"{brand}"')
-            if title:
-                # Use key parts of title
-                title_parts = title.split()[:5]
-                query_parts.append(' '.join(title_parts))
-                
-        elif strategy == 'variant_specific':
-            if brand:
-                query_parts.append(f'"{brand}"')
-            if variant:
-                query_parts.append(f'"{variant}"')
-                
-        # Add site restriction
+        # Add site restriction if specified
         if site:
             if '.' not in site:
                 site = f'{site}.co.za'
-            query_parts.append(f'site:{site}')
+            query = f'{query} site:{site}'
         
-        return ' '.join(query_parts) if query_parts else None
+        return query
     
     def evaluate_results_with_variant_matching(self, results: List[dict], product: dict, retailer: str) -> Optional[dict]:
         """IMPROVED: Evaluate search results with variant awareness"""
@@ -754,7 +695,8 @@ class IntelligentImageProcessor:
         brand = product.get('Brand', '')
         title = product.get('Title', '')
         
-        query = f'"{brand}" "{title}" South Africa product'
+        # USE EXACT PRODUCT TITLE ONLY - NO BARCODE
+        query = title  # Use the exact product name as-is
         
         params = {
             'engine': 'google_images',

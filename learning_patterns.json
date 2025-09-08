@@ -1,7 +1,7 @@
 {
   "successful_retailers": {
     "checkers": 7,
-    "shoprite": 44,
+    "shoprite": 47,
     "pnp": 1
   },
   "brand_keywords": {
@@ -21,8 +21,8 @@
   },
   "search_strategies": {
     "barcode_first": {
-      "success": 61,
-      "total": 76
+      "success": 65,
+      "total": 80
     },
     "brand_title": {
       "success": 4,

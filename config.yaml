@@ -2,8 +2,8 @@ search:
   provider: serpapi
   serp_api_key: "${SERP_API_KEY}"
   max_results: 10
-  query_template: "{barcode} packshot"
-  sa_keywords: "South Africa product packshot retail"
+  query_template: "{title}"  # USE EXACT PRODUCT NAME ONLY - NO BARCODE
+  sa_keywords: ""  # No extra keywords - just exact product name
   results_per_query: 5
   # If true, will consult database search_cache before calling API
   use_db_cache: true
@@ -27,9 +27,9 @@ clip:
   rank_top_k: 5
   # Map CLIP cosine similarity [-1..1] to [0..100] and compare to thresholds below
   thresholds:
-    auto_approve: 70
-    needs_review: 40
-    auto_reject: 25
+    auto_approve: 45  # Lower to approve more automatically
+    needs_review: 25  # Lower to save more for review
+    auto_reject: 15   # Only reject really bad matches
 
 ocr:
   enabled: true

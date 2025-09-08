@@ -25,6 +25,9 @@
             <button class="btn btn-success process-all-btn" onclick="processAllImages()">
                 Process All ({{ stats.not_processed }} remaining)
             </button>
+            <button class="btn btn-danger stop-processing-btn" onclick="stopProcessing()" style="display:none;margin-top:10px;">
+                🛑 STOP Processing
+            </button>
             <p class="card-description">Process all remaining images</p>
         </div>
         
@@ -421,6 +424,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         
         const button = document.querySelector('.process-all-btn');
+        const stopButton = document.querySelector('.stop-processing-btn');
         
         confirmAction('Process all remaining images? This may take a while.', async () => {
             if (processing) {
@@ -430,6 +434,8 @@ document.addEventListener('DOMContentLoaded', function() {
             
             processing = true;
             setButtonLoading(button, true);
+            button.style.display = 'none';
+            stopButton.style.display = 'block';
             document.getElementById('processing-status').style.display = 'block';
             checkProgress();
             
@@ -455,11 +461,47 @@ document.addEventListener('DOMContentLoaded', function() {
             } finally {
                 processing = false;
                 setButtonLoading(button, false);
+                button.style.display = 'block';
+                stopButton.style.display = 'none';
                 document.getElementById('processing-status').style.display = 'none';
             }
         }, {
             title: 'Process All Images',
             confirmText: 'Process All'
+        });
+    };
+    
+    window.stopProcessing = async () => {
+        confirmAction('Stop the current processing?', async () => {
+            try {
+                const response = await fetch('/api/stop-processing', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'}
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showAlert('Processing stopped!', 'success');
+                    processing = false;
+                    
+                    const button = document.querySelector('.process-all-btn');
+                    const stopButton = document.querySelector('.stop-processing-btn');
+                    setButtonLoading(button, false);
+                    button.style.display = 'block';
+                    stopButton.style.display = 'none';
+                    document.getElementById('processing-status').style.display = 'none';
+                    
+                    await refreshStats();
+                } else {
+                    showAlert('Error: ' + data.error, 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            }
+        }, {
+            title: 'Stop Processing',
+            confirmText: 'Stop',
+            confirmClass: 'btn-danger'
         });
     };
     

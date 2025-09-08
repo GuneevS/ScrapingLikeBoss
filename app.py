@@ -78,6 +78,7 @@ processor = IntelligentImageProcessor(config, db)
 processing_state = {
     'active': False,
     'is_running': False,
+    'stop_requested': False,  # Add flag for stop requests
     'current_batch': None,
     'progress': 0,
     'message': 'Ready',
@@ -286,6 +287,7 @@ def process_all_images():
     processing_state = {
         'active': True,
         'is_running': True,
+        'stop_requested': False,  # Reset stop flag
         'current_batch': None,
         'progress': 0,
         'message': 'Starting to process all remaining products...',
@@ -310,17 +312,19 @@ def process_all_images():
     def process_all():
         try:
             logger.info(f"Starting process_all with from_bottom={from_bottom}, force_web={force_web}")
-            # Get ALL unprocessed products
+            # Get ALL unprocessed products AT THE START - snapshot to avoid infinite loop
             cursor = db.conn.cursor()
             cursor.execute(
                 """
-                SELECT COUNT(*) FROM products 
+                SELECT Variant_SKU FROM products 
                 WHERE (image_status = 'not_processed' OR image_status IS NULL OR image_status = 'not_found')
                    AND (downloaded_image_path IS NULL OR downloaded_image_path = '')
                 """
             )
-            total_remaining = cursor.fetchone()[0]
+            all_skus_to_process = [row[0] for row in cursor.fetchall()]
             cursor.close()
+            
+            total_remaining = len(all_skus_to_process)
             
             if total_remaining == 0:
                 processing_state['message'] = 'No products to process'
@@ -328,21 +332,47 @@ def process_all_images():
                 return
             
             processing_state['message'] = f'Processing {total_remaining} products...'
+            processing_state['products_total'] = total_remaining
             
             # Process in batches of 50 to avoid memory issues
             batch_size = 50
             processed_total = 0
+            skus_processed = set()  # Track what we've already tried
             
-            while True:
-                products = db.get_unprocessed_products_from_bottom(limit=batch_size) if from_bottom else db.get_unprocessed_products(limit=batch_size)
+            while processed_total < total_remaining:
+                # Check if stop was requested
+                if processing_state.get('stop_requested', False):
+                    processing_state['message'] = f'Processing stopped at {processed_total}/{total_remaining} products'
+                    logger.info(f"Processing stopped by user at {processed_total}/{total_remaining}")
+                    break
+                
+                # Get next batch of SKUs we haven't tried yet
+                remaining_skus = [sku for sku in all_skus_to_process if sku not in skus_processed]
+                if not remaining_skus:
+                    break
+                    
+                batch_skus = remaining_skus[:batch_size]
+                
+                # Get the actual product data for this batch
+                cursor = db.conn.cursor()
+                placeholders = ','.join(['?' for _ in batch_skus])
+                cursor.execute(f"SELECT * FROM products WHERE Variant_SKU IN ({placeholders})", batch_skus)
+                products = [dict(row) for row in cursor.fetchall()]
+                cursor.close()
+                
                 if not products:
                     break
                 
+                # Mark these SKUs as processed
+                for product in products:
+                    skus_processed.add(product.get('Variant_SKU'))
+                
                 # Process this batch
                 def progress_callback(current, total, message):
-                    overall_progress = int(((processed_total + current) / total_remaining) * 100)
+                    overall_progress = min(100, int(((processed_total + current) / total_remaining) * 100))
                     processing_state['progress'] = overall_progress
                     processing_state['message'] = f"Processing {processed_total + current}/{total_remaining}: {message}"
+                    processing_state['products_processed'] = processed_total + current
                 
                 # Use force web mode optionally
                 if force_web:
@@ -371,10 +401,15 @@ def process_all_images():
                     results = _process_with_force(products, progress_callback)
                 else:
                     results = processor.process_batch(products, progress_callback)
-                processed_total += results['success'] + results['failed']
+                processed_total += len(products)  # Count all attempted, not just success/failed
                 
-                # Update overall progress
-                processing_state['progress'] = int((processed_total / total_remaining) * 100)
+                # Update overall progress - cap at 100%
+                processing_state['progress'] = min(100, int((processed_total / total_remaining) * 100))
+                processing_state['products_processed'] = processed_total
+                
+                # Stop if we've processed all the SKUs we originally intended to
+                if processed_total >= total_remaining:
+                    break
             
             processing_state['message'] = f"Completed processing {processed_total} products"
             processing_state['progress'] = 100
@@ -395,6 +430,36 @@ def process_all_images():
     thread.start()
     
     return jsonify({'success': True, 'message': 'Processing all remaining products', 'processed': 'all'})
+
+@app.route('/api/stop-processing', methods=['POST'])
+def stop_processing():
+    """Stop the current processing"""
+    global processing_state
+    
+    if not processing_state['active']:
+        return jsonify({'error': 'No processing is currently active'}), 400
+    
+    processing_state['stop_requested'] = True
+    processing_state['message'] = 'Stopping processing...'
+    
+    # Wait a bit for the processing to actually stop
+    import time
+    for _ in range(10):  # Wait up to 2 seconds
+        if not processing_state['active']:
+            break
+        time.sleep(0.2)
+    
+    # Force stop if still running
+    if processing_state['active']:
+        processing_state['active'] = False
+        processing_state['is_running'] = False
+        processing_state['message'] = 'Processing stopped (forced)'
+    
+    return jsonify({
+        'success': True, 
+        'message': 'Processing stopped',
+        'processed': processing_state.get('products_processed', 0)
+    })
 
 @app.route('/api/progress')
 def get_progress():
