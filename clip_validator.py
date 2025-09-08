@@ -33,20 +33,22 @@ class CLIPValidator:
         self.config = config or {}
         self.db_path = db_path
         
-        # Device selection - use MPS (Metal) for M4 Max GPU acceleration
-        if torch.backends.mps.is_available():
-            self.device = torch.device("mps")
-            logger.info("Using Apple Silicon GPU (MPS) for CLIP")
-        elif torch.cuda.is_available():
+        # Device selection with config preference
+        preferred = (self.config or {}).get('device_preference', ["cuda", "mps"]) if self.config else ["cuda", "mps"]
+        self.device = torch.device("cpu")
+        if "cuda" in preferred and torch.cuda.is_available():
             self.device = torch.device("cuda")
             logger.info("Using CUDA GPU for CLIP")
+        elif "mps" in preferred and getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+            logger.info("Using Apple Silicon GPU (MPS) for CLIP")
         else:
-            self.device = torch.device("cpu")
-            logger.info("Using CPU for CLIP")
+            logger.info("Using CPU for CLIP (GPU not available)")
         
         # Load CLIP model (ViT-B/32 is a good balance of speed and accuracy)
         try:
-            self.model, self.preprocess = clip.load("ViT-B/32", device=self.device)
+            model_name = (self.config or {}).get('model', 'ViT-B/32')
+            self.model, self.preprocess = clip.load(model_name, device=self.device)
             logger.info("CLIP model loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load CLIP model: {str(e)}")
@@ -60,12 +62,13 @@ class CLIPValidator:
             logger.warning(f"OCR initialization failed: {str(e)}")
             self.ocr_reader = None
         
-        # Validation thresholds (more lenient to reduce false rejections)
+        # Thresholds from config (scaled 0..1 internally)
+        cfg_thr = (self.config or {}).get('thresholds', {})
         self.thresholds = {
-            'auto_approve': 0.60,    # High confidence match (reduced from 0.70)
-            'needs_review': 0.30,    # Low confidence, manual review needed (reduced from 0.40)
-            'auto_reject': 0.15,     # Very poor match, likely wrong product (reduced from 0.25)
-            'variant_penalty': 0.10  # Penalty for variant mismatch (reduced from 0.15)
+            'auto_approve': float(cfg_thr.get('auto_approve', 70)) / 100.0,
+            'needs_review': float(cfg_thr.get('needs_review', 40)) / 100.0,
+            'auto_reject': float(cfg_thr.get('auto_reject', 25)) / 100.0,
+            'variant_penalty': 0.10
         }
         
         # Cache for processed embeddings
@@ -103,8 +106,10 @@ class CLIPValidator:
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
                 text_features = text_features / text_features.norm(dim=-1, keepdim=True)
                 
-                # Calculate similarities
-                similarities = (100.0 * image_features @ text_features.T).softmax(dim=-1)
+                # Calculate cosine similarities in [0..1]
+                logits = image_features @ text_features.T
+                # Map to [0..1] range from cosine [-1..1]
+                similarities = (logits + 1.0) / 2.0
                 
             # Get scores
             scores = similarities[0].cpu().numpy()

@@ -8,6 +8,7 @@ import re
 import json
 import asyncio
 import aiohttp
+import requests
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -17,6 +18,7 @@ from datetime import datetime
 from database import ImageDatabase
 from learning_system import LearningSystem
 from src import img_utils, downloader
+from src.clip_service import get_clip_service
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,11 @@ class ImageSearcher:
     def __init__(self, config):
         self.config = config
         self.api_key = config.get('search', {}).get('serp_api_key')
+        # Persistent HTTP session for lower latency and connection reuse
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36'
+        })
     
     def search_google_images(self, query: str, num_results: int = 3) -> List[dict]:
         """Search Google Images via SerpAPI"""
@@ -35,12 +42,13 @@ class ImageSearcher:
             'engine': 'google_images',
             'q': query,
             'api_key': self.api_key,
-            'num': num_results
+            'num': num_results,
+            'gl': 'za',
+            'hl': 'en'
         }
         
         try:
-            import requests
-            response = requests.get('https://serpapi.com/search', params=params, timeout=10)
+            response = self.session.get('https://serpapi.com/search', params=params, timeout=10)
             if response.status_code == 200:
                 data = response.json()
                 results = []
@@ -63,6 +71,14 @@ class ImageDownloader:
     """Simple wrapper for download functionality"""
     def __init__(self, config):
         self.config = config
+        # No persistent session to avoid cross-event-loop issues
+        self._session: Optional[aiohttp.ClientSession] = None
+    
+    async def _get_session(self) -> aiohttp.ClientSession:
+        # Build a short-lived session tied to the current loop/task
+        connector = aiohttp.TCPConnector(limit=self.config.get('network', {}).get('concurrency', 10))
+        timeout = aiohttp.ClientTimeout(total=self.config.get('network', {}).get('timeout', 15))
+        return aiohttp.ClientSession(connector=connector, timeout=timeout)
     
     async def download_image(self, url: str) -> Optional[bytes]:
         """Download image from URL with proper headers"""
@@ -80,8 +96,18 @@ class ImageDownloader:
         }
             
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=30, ssl=False) as response:
+            # Add referer when available to improve retailer CDN acceptance
+            try:
+                from urllib.parse import urlparse as _urlparse
+                netloc = _urlparse(url).netloc
+                if netloc and 'Referer' not in headers:
+                    headers['Referer'] = f"https://{netloc}"
+            except Exception:
+                pass
+
+            session = await self._get_session()
+            async with session as s:
+                async with s.get(url, headers=headers, ssl=False) as response:
                     if response.status == 200:
                         return await response.read()
                     else:
@@ -97,7 +123,8 @@ class IntelligentImageProcessor:
         self.api_key = config.get('search', {}).get('serp_api_key')
         self.searcher = ImageSearcher(config)
         self.downloader = ImageDownloader(config)
-        self.learning = LearningSystem(db)
+        self.learning = LearningSystem()
+        self.clip = get_clip_service(config)
         
         # Setup directories
         self.output_dir = Path('output')
@@ -208,7 +235,7 @@ class IntelligentImageProcessor:
         
         return cached_result
     
-    async def search_product_image(self, product: dict) -> Optional[dict]:
+    async def search_product_image(self, product: dict, force_web: bool = False) -> Optional[dict]:
         """Search for product image using improved strategies with variant awareness"""
         
         sku = product.get('Variant_SKU', 'Unknown')
@@ -223,9 +250,36 @@ class IntelligentImageProcessor:
             logger.info(f"✓ Found in local cache: {sku}")
             return cached
         
-        # Check search result cache for similar products
+        # Try DB search cache to avoid API calls (unless forcing web search)
+        try_db_cache = False if force_web else self.config.get('search', {}).get('use_db_cache', True)
+        if try_db_cache and (barcode or brand):
+            cached_entry = self.db.check_search_cache(str(barcode or ''), str(brand or ''))
+            if cached_entry and cached_entry.get('image_url'):
+                logger.info(f"✓ DB search cache hit for {sku} → {cached_entry.get('image_url')}")
+                dl = await self._download_and_save_image(
+                    cached_entry['image_url'],
+                    product,
+                    cached_entry.get('confidence', 50) or 50,
+                    cached_entry.get('source', '') or '',
+                    '',
+                    cached_entry.get('title', '') or '',
+                    cached_entry.get('image_url', '')
+                )
+                if dl.get('success'):
+                    return {
+                        'success': True,
+                        'url': cached_entry['image_url'],
+                        'confidence': cached_entry.get('confidence', 50),
+                        'source': cached_entry.get('source', ''),
+                        'search_query': 'db_cache',
+                        'image_source': cached_entry.get('source', '')
+                    }
+                else:
+                    logger.warning(f"DB cache URL failed to download for {sku}, will fall back to search")
+
+        # Check search result cache for similar products (unless forcing web search)
         cache_key = self._get_search_cache_key(brand, product.get('Tier_1', ''), variant)
-        if cache_key in self.search_cache:
+        if (not force_web) and (cache_key in self.search_cache):
             self.cache_hits += 1
             logger.info(f"✓ Search cache hit for similar product: {sku}")
             cached_result = self.search_cache[cache_key].copy()
@@ -235,7 +289,9 @@ class IntelligentImageProcessor:
         
         # Try online search with improved strategy
         self.total_searches += 1
-        result = self.search_online_improved(product)
+        if force_web:
+            logger.info(f"Force web search enabled for SKU {sku}; bypassing caches")
+        result = await self.search_online_improved_async(product)
         if result:
             # Download and save the image
             download_result = await self._download_and_save_image(
@@ -250,8 +306,20 @@ class IntelligentImageProcessor:
             
             if download_result.get('success'):
                 # Cache the result for similar products only if download succeeded
-                self.search_cache[cache_key] = result.copy()
-                self.cache_search_result(product, result)
+                if not force_web:
+                    self.search_cache[cache_key] = result.copy()
+                    self.cache_search_result(product, result)
+                # Save to DB search cache for barcode+brand combo
+                if self.config.get('search', {}).get('use_db_cache', True):
+                    try:
+                        self.db.save_search_cache(
+                            str(barcode or ''), str(brand or ''), str(title or ''),
+                            result.get('url', ''), float(result.get('confidence', 0) or 0),
+                            result.get('source', '') or ''
+                        )
+                        logger.info(f"✓ Saved to DB search cache: {barcode} / {brand} → {result.get('url','')}")
+                    except Exception as e:
+                        logger.warning(f"Failed to save search cache: {e}")
                 
                 # Return success with download info
                 result.update(download_result)
@@ -264,7 +332,7 @@ class IntelligentImageProcessor:
         logger.info(f"Cache efficiency: {self.cache_hits}/{self.total_searches} = {self.cache_hits/max(1,self.total_searches)*100:.1f}%")
         return {'success': False, 'error': 'No suitable image found'}
     
-    def search_online_improved(self, product: dict) -> Optional[dict]:
+    async def search_online_improved_async(self, product: dict) -> Optional[dict]:
         """IMPROVED: Search online with retailer prioritization and variant awareness"""
         
         sku = product.get('Variant_SKU', 'Unknown')
@@ -295,8 +363,9 @@ class IntelligentImageProcessor:
                             query, 
                             num_results=self.config.get('search', {}).get('results_per_query', 3)
                         )
-                        
                         if results:
+                            # Re-rank with CLIP on thumbnails (GPU) to improve top-1
+                            results = await self._rank_results_with_clip(results, product)
                             # Evaluate with variant awareness
                             best = self.evaluate_results_with_variant_matching(results, product, site)
                             if best:
@@ -463,6 +532,7 @@ class IntelligentImageProcessor:
         variant = (product.get('Variant_Title', '') or '').lower()
         variant_option = (product.get('Variant_option', '') or '').lower()
         barcode = str(product.get('Variant_Barcode', ''))
+        size_tolerance_pct = self.config.get('validation', {}).get('size_tolerance_percent', 5)
         
         best_result = None
         best_score = 0
@@ -509,12 +579,13 @@ class IntelligentImageProcessor:
             
             score += variant_score
             
-            # Size matching (15% weight)
-            size_pattern = r'\b(\d+(?:\.\d+)?\s*(?:g|kg|ml|l|L))\b'
-            title_sizes = re.findall(size_pattern, title)
-            result_sizes = re.findall(size_pattern, result_title)
-            if title_sizes and result_sizes:
-                if title_sizes[0] == result_sizes[0]:
+            # Size matching with tolerance (15% weight)
+            product_size = self._extract_size_value(title)
+            result_size = self._extract_size_value(result_title)
+            if product_size and result_size:
+                # Percent difference
+                diff_pct = abs(product_size - result_size) / product_size * 100
+                if diff_pct <= size_tolerance_pct:
                     score += 15
                 else:
                     score -= 10  # Size mismatch penalty
@@ -534,11 +605,17 @@ class IntelligentImageProcessor:
             # Track best result
             if score > best_score:
                 best_score = score
+                # Enhanced description from search result
+                search_description = result.get('title', '')
+                if result.get('snippet'):
+                    search_description += f" | {result.get('snippet', '')}"
+                
                 best_result = {
                     'url': result.get('original') or result.get('link') or result.get('thumbnail'),  # CRITICAL FIX: Include URL!
                     'title': result.get('title', ''),
                     'source': result.get('source', ''),
                     'snippet': result.get('snippet', ''),
+                    'description': search_description,  # ENHANCED: Full product description from search
                     'confidence': min(max(score, 0), 100),
                     'sku': sku,
                     'variant_match_score': variant_score,
@@ -551,6 +628,73 @@ class IntelligentImageProcessor:
             return None
         
         return best_result if best_score > 35 else None
+
+    def _extract_size_value(self, text: str) -> Optional[float]:
+        """Extract normalized size value in grams or milliliters from text.
+        g/kg -> grams, ml/l -> milliliters (treat ml and g similarly for scoring).
+        """
+        import re
+        match = re.search(r"(\d+(?:\.\d+)?)\s*(kg|g|l|ml|L)", text)
+        if not match:
+            return None
+        value = float(match.group(1))
+        unit = match.group(2).lower()
+        if unit == 'kg':
+            return value * 1000.0
+        if unit == 'l':
+            return value * 1000.0
+        if unit == 'ml':
+            return value
+        if unit == 'g':
+            return value
+        return None
+
+    async def _rank_results_with_clip(self, results: List[dict], product: dict) -> List[dict]:
+        """Download thumbnails and use CLIP to re-rank candidates (best first)."""
+        try:
+            # Collect thumbnail URLs
+            urls: List[str] = []
+            idx_map: List[int] = []
+            for i, r in enumerate(results):
+                thumb = r.get('thumbnail') or r.get('original') or r.get('link')
+                if thumb:
+                    urls.append(thumb)
+                    idx_map.append(i)
+            if not urls:
+                return results
+
+            # Download thumbnails concurrently
+            url_to_bytes = await downloader.download_batch(urls, {
+                'network': {
+                    'concurrency': self.config.get('network', {}).get('concurrency', 10),
+                    'timeout': self.config.get('network', {}).get('timeout', 15)
+                }
+            })
+            thumbs: List[bytes] = [url_to_bytes.get(u) for u in urls if url_to_bytes.get(u)]
+            if not thumbs:
+                return results
+
+            # Rank indices by CLIP
+            order = self.clip.rank_thumbnails(product, thumbs)
+            logger.info(f"CLIP thumbnail re-ranking: ranked {len(order)} candidates on {getattr(self.clip, 'device', 'gpu')} device")
+            if not order:
+                return results
+
+            # Map back to original results in new order
+            ordered_results: List[dict] = []
+            for ord_idx in order:
+                if 0 <= ord_idx < len(idx_map):
+                    ordered_results.append(results[idx_map[ord_idx]])
+            # Append any missing (failed downloads)
+            if len(ordered_results) < len(results):
+                used = set(id(x) for x in ordered_results)
+                for r in results:
+                    if id(r) not in used:
+                        ordered_results.append(r)
+            return ordered_results
+        except Exception as e:
+            logger.warning(f"CLIP re-ranking failed: {e}")
+            return results
     
     def evaluate_search_results(self, results: List[dict], product: dict) -> Optional[dict]:
         """Original evaluation for fallback"""
@@ -719,8 +863,46 @@ class IntelligentImageProcessor:
         try:
             logger.info(f"Starting download from URL: {url}")
             
-            # Download image using the downloader
+            # Download image using the downloader; try async first
             image_bytes = await self.downloader.download_image(url)
+            # Fallback: try batch downloader (same headers/session path)
+            if not image_bytes:
+                try:
+                    url_to_bytes = await downloader.download_batch([url], {
+                        'network': {
+                            'concurrency': self.config.get('network', {}).get('concurrency', 10),
+                            'timeout': self.config.get('network', {}).get('timeout', 15)
+                        }
+                    })
+                    image_bytes = url_to_bytes.get(url)
+                except Exception as e:
+                    logger.warning(f"Batch download fallback failed: {e}")
+            # Final fallback: sync request in a thread to avoid loop issues
+            if not image_bytes:
+                import requests
+                from concurrent.futures import ThreadPoolExecutor
+                def _sync_fetch(u: str) -> bytes:
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
+                        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8'
+                    }
+                    try:
+                        from urllib.parse import urlparse as _p
+                        netloc = _p(u).netloc
+                        if netloc:
+                            headers['Referer'] = f"https://{netloc}"
+                    except Exception:
+                        pass
+                    r = requests.get(u, headers=headers, timeout=15)
+                    if r.status_code == 200:
+                        return r.content
+                    return b''
+                with ThreadPoolExecutor(max_workers=1) as ex:
+                    fut = ex.submit(_sync_fetch, url)
+                    try:
+                        image_bytes = fut.result(timeout=20)
+                    except Exception:
+                        image_bytes = None
                 
             if not image_bytes:
                 logger.error(f"No image bytes returned from download")
@@ -876,11 +1058,20 @@ class IntelligentImageProcessor:
                     results['failed'] += 1
                     if image_result and image_result.get('error'):
                         results['errors'].append(f"SKU {product.get('Variant_SKU')}: {image_result['error']}")
+                    # Avoid burning API repeatedly: mark as not_found for now
+                    try:
+                        self.db.mark_not_found(product.get('Variant_SKU'))
+                    except Exception:
+                        pass
                 
             except Exception as e:
                 results['failed'] += 1
                 results['errors'].append(f"SKU {product.get('Variant_SKU')}: {str(e)}")
                 logger.error(f"Error processing product {product.get('Variant_SKU')}: {str(e)}")
+                try:
+                    self.db.mark_not_found(product.get('Variant_SKU'))
+                except Exception:
+                    pass
     
     def _run_clip_validation(self, products: List[dict], results: dict):
         """Run CLIP validation on processed images"""
@@ -907,7 +1098,12 @@ class IntelligentImageProcessor:
             
             if products_to_validate:
                 logger.info(f"Running CLIP validation on {len(products_to_validate)} images")
-                validator = CLIPValidator(config={'update_database': True})
+                clip_cfg = self.config.get('clip', {}).copy()
+                clip_cfg.update({'update_database': True})
+                # Provide device preference as flat keys for validator
+                if 'device_preference' in self.config.get('clip', {}):
+                    clip_cfg['device_preference'] = self.config['clip']['device_preference']
+                validator = CLIPValidator(config=clip_cfg)
                 validation_results = validator.validate_batch(products_to_validate)
                 results['validated'] = validation_results['validated']
                 logger.info(f"CLIP validation complete: {validation_results['auto_approved']} approved, {validation_results['needs_review']} need review")
@@ -925,15 +1121,26 @@ class IntelligentImageProcessor:
         # Get the SPECIFIC product - use thread-safe method
         product = self.db.get_product_by_sku(sku)
         if not product or not product['downloaded_image_path']:
-            logger.warning(f"No product or image path found for SKU: {sku}")
-            return False
+            logger.warning(f"No product or image path found for SKU: {sku} - attempting path repair")
+            # Attempt path repair by searching known folders
+            repaired = self._repair_missing_path(sku, product)
+            if not repaired:
+                return False
+            # Refresh product with repaired path
+            product = self.db.get_product_by_sku(sku)
         
         current_path = Path(product['downloaded_image_path'])
         
         # CRITICAL: Ensure we're dealing with a FILE, not a directory
         if not current_path.exists():
-            logger.warning(f"Image file does not exist: {current_path}")
-            return False
+            logger.warning(f"Image file does not exist: {current_path} - attempting path repair")
+            # Attempt repair again in case DB had stale path
+            if not self._repair_missing_path(sku, product):
+                return False
+            product = self.db.get_product_by_sku(sku)
+            current_path = Path(product['downloaded_image_path'])
+            if not current_path.exists():
+                return False
         
         if current_path.is_dir():
             logger.error(f"CRITICAL ERROR: Path is a directory, not a file: {current_path}")
@@ -962,17 +1169,21 @@ class IntelligentImageProcessor:
             if new_path.exists() and new_path != current_path:
                 new_path.unlink()  # Remove existing approved file
             
-            # Move file
-            current_path.rename(new_path)
-            logger.info(f"✓ Moved to approved: {current_path} → {new_path}")
+            # Move file only if destination differs
+            if new_path != current_path:
+                current_path.rename(new_path)
+                logger.info(f"✓ Moved to approved: {current_path} → {new_path}")
+            else:
+                logger.info(f"✓ Already in approved: {new_path}")
             
             # Move metadata if exists
             current_meta = current_path.with_suffix('.json')
             if current_meta.exists() and current_meta.is_file():
                 new_meta = new_path.with_suffix('.json')
-                if new_meta.exists():
-                    new_meta.unlink()
-                current_meta.rename(new_meta)
+                if new_meta != current_meta:
+                    if new_meta.exists():
+                        new_meta.unlink()
+                    current_meta.rename(new_meta)
             
             # Update database for ONLY this SKU
             cursor = self.db.conn.cursor()
@@ -980,10 +1191,9 @@ class IntelligentImageProcessor:
                 cursor.execute('''
                     UPDATE products SET 
                         downloaded_image_path = ?,
-                        image_status = 'approved',
-                        updated_at = ?
-                    WHERE Variant_SKU = ? AND Variant_SKU = ?
-                ''', (str(new_path), datetime.now(), sku, sku))  # Double-check SKU
+                        image_status = 'approved'
+                    WHERE Variant_SKU = ?
+                ''', (str(new_path), sku))
                 
                 # Verify only one row was updated
                 if cursor.rowcount != 1:
@@ -1013,15 +1223,22 @@ class IntelligentImageProcessor:
         # Get specific product
         product = self.db.get_product_by_sku(sku)
         if not product or not product['downloaded_image_path']:
-            logger.warning(f"No product or image path for SKU: {sku}")
-            return False
+            logger.warning(f"No product or image path for SKU: {sku} - attempting path repair")
+            if not self._repair_missing_path(sku, product):
+                return False
+            product = self.db.get_product_by_sku(sku)
         
         current_path = Path(product['downloaded_image_path'])
         
         # Verify it's a file
         if not current_path.exists():
-            logger.warning(f"Image file does not exist: {current_path}")
-            return False
+            logger.warning(f"Image file does not exist: {current_path} - attempting path repair")
+            if not self._repair_missing_path(sku, product):
+                return False
+            product = self.db.get_product_by_sku(sku)
+            current_path = Path(product['downloaded_image_path'])
+            if not current_path.exists():
+                return False
         
         if current_path.is_dir():
             logger.error(f"Path is directory: {current_path}")
@@ -1048,17 +1265,21 @@ class IntelligentImageProcessor:
             if new_path.exists() and new_path != current_path:
                 new_path.unlink()
             
-            # Move file
-            current_path.rename(new_path)
-            logger.info(f"✓ Moved to pending: {current_path} → {new_path}")
+            # Move file only if destination differs
+            if new_path != current_path:
+                current_path.rename(new_path)
+                logger.info(f"✓ Moved to pending: {current_path} → {new_path}")
+            else:
+                logger.info(f"✓ Already in pending: {new_path}")
             
             # Move metadata if exists
             current_meta = current_path.with_suffix('.json')
             if current_meta.exists() and current_meta.is_file():
                 new_meta = new_path.with_suffix('.json')
-                if new_meta.exists():
-                    new_meta.unlink()
-                current_meta.rename(new_meta)
+                if new_meta != current_meta:
+                    if new_meta.exists():
+                        new_meta.unlink()
+                    current_meta.rename(new_meta)
             
             # Update database
             cursor = self.db.conn.cursor()
@@ -1090,17 +1311,22 @@ class IntelligentImageProcessor:
         # Get specific product - thread-safe
         product = self.db.get_product_by_sku(sku)
         if not product or not product['downloaded_image_path']:
-            logger.warning(f"No product or image path for SKU: {sku}")
-            return False
+            logger.warning(f"No product or image path for SKU: {sku} - attempting path repair")
+            if not self._repair_missing_path(sku, product):
+                return False
+            product = self.db.get_product_by_sku(sku)
         
         current_path = Path(product['downloaded_image_path'])
         
         # Verify it's a file
         if not current_path.exists():
-            logger.warning(f"Image file does not exist: {current_path}")
-            # Still update database to declined status
-            self.db.decline_image(sku)
-            return True
+            logger.warning(f"Image file does not exist: {current_path} - attempting path repair")
+            if not self._repair_missing_path(sku, product):
+                # Still update database to declined status
+                self.db.decline_image(sku)
+                return True
+            product = self.db.get_product_by_sku(sku)
+            current_path = Path(product['downloaded_image_path'])
         
         if current_path.is_dir():
             logger.error(f"CRITICAL ERROR: Path is directory: {current_path}")
@@ -1127,17 +1353,21 @@ class IntelligentImageProcessor:
             if new_path.exists() and new_path != current_path:
                 new_path.unlink()  # Remove old declined file
             
-            # Move file
-            current_path.rename(new_path)
-            logger.info(f"✓ Moved to declined: {current_path} → {new_path}")
+            # Move file only if destination differs
+            if new_path != current_path:
+                current_path.rename(new_path)
+                logger.info(f"✓ Moved to declined: {current_path} → {new_path}")
+            else:
+                logger.info(f"✓ Already in declined: {new_path}")
             
             # Move metadata if exists
             current_meta = current_path.with_suffix('.json')
             if current_meta.exists() and current_meta.is_file():
                 new_meta = new_path.with_suffix('.json')
-                if new_meta.exists():
-                    new_meta.unlink()
-                current_meta.rename(new_meta)
+                if new_meta != current_meta:
+                    if new_meta.exists():
+                        new_meta.unlink()
+                    current_meta.rename(new_meta)
             
             # Update database for ONLY this SKU
             cursor = self.db.conn.cursor()
@@ -1161,4 +1391,45 @@ class IntelligentImageProcessor:
         except Exception as e:
             logger.error(f"Error declining image for SKU {sku}: {str(e)}")
             self.db.conn.rollback()
+            return False
+
+    def _repair_missing_path(self, sku: str, product: Optional[dict]) -> bool:
+        """Attempt to find an image file for SKU across approved/pending/declined and update DB."""
+        try:
+            brand = (product.get('Brand') if product else None) or 'Unknown'
+            safe_brand = self.sanitize_filename(brand)
+            safe_sku = self.sanitize_filename(sku)
+            candidates = [
+                self.approved_dir / safe_brand,
+                self.pending_dir / safe_brand,
+                self.declined_dir / safe_brand,
+                self.approved_dir,
+                self.pending_dir,
+                self.declined_dir,
+            ]
+            found_path: Optional[Path] = None
+            for base in candidates:
+                if base.exists():
+                    for file in base.glob(f"**/*{safe_sku}*.jpg"):
+                        if file.is_file():
+                            found_path = file
+                            break
+                    if found_path:
+                        break
+            if found_path:
+                cursor = self.db.conn.cursor()
+                try:
+                    cursor.execute(
+                        'UPDATE products SET downloaded_image_path = ? WHERE Variant_SKU = ?',
+                        (str(found_path), sku)
+                    )
+                    self.db.conn.commit()
+                    logger.info(f"✓ Repaired path for {sku}: {found_path}")
+                    return True
+                finally:
+                    cursor.close()
+            logger.warning(f"Path repair failed for {sku}")
+            return False
+        except Exception as e:
+            logger.error(f"Path repair error for {sku}: {e}")
             return False

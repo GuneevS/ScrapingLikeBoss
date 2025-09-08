@@ -4,8 +4,11 @@ search:
   max_results: 10
   query_template: "{barcode} packshot"
   sa_keywords: "South Africa product packshot retail"
+  results_per_query: 5
+  # If true, will consult database search_cache before calling API
+  use_db_cache: true
 network:
-  concurrency: 10
+  concurrency: 25
   timeout: 15
 output:
   base_dir: "output"
@@ -15,3 +18,33 @@ image:
   format: "jpg"
 logging:
   level: "INFO"
+
+clip:
+  model: "ViT-B/32"
+  require_gpu: true
+  device_preference: ["cuda", "mps"]
+  batch_size: 16
+  rank_top_k: 5
+  # Map CLIP cosine similarity [-1..1] to [0..100] and compare to thresholds below
+  thresholds:
+    auto_approve: 70
+    needs_review: 40
+    auto_reject: 25
+
+ocr:
+  enabled: true
+  languages: ["en"]
+  gpu: true
+
+validation:
+  # Stricter matching controls
+  require_brand_ocr: true
+  strict_variant: true
+  # Accepted percent tolerance for size mismatch (e.g., 500g vs 510g)
+  size_tolerance_percent: 5
+  # Penalties/bonuses
+  penalties:
+    variant_mismatch: 10
+    missing_brand_text: 15
+    poor_quality: 15
+    user_photo_background: 10

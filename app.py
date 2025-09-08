@@ -15,6 +15,7 @@ import threading
 import queue
 from werkzeug.utils import secure_filename
 import yaml
+from dotenv import load_dotenv
 import sqlite3
 import pandas as pd
 
@@ -37,7 +38,8 @@ db = ImageDatabase('data/products.db')
 # Initialize learning system
 learning = LearningSystem()
 
-# Load configuration
+# Load environment and configuration
+load_dotenv()
 def load_config():
     config_path = 'config.yaml'
     if os.path.exists(config_path):
@@ -93,6 +95,16 @@ logger = logging.getLogger(__name__)
 def index():
     """Main dashboard"""
     stats = db.get_statistics()
+    # Recompute remaining including not_found
+    cursor = db.conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM products WHERE (image_status = 'not_processed' OR image_status IS NULL) AND (downloaded_image_path IS NULL OR downloaded_image_path = '')"
+        )
+        remaining = cursor.fetchone()[0]
+    finally:
+        cursor.close()
+    stats['not_processed'] = remaining
     return render_template('dashboard.html', stats=stats)
 
 @app.route('/import')
@@ -155,6 +167,8 @@ def start_processing():
     data = request.json or {}
     batch_size = data.get('batch_size', 10)
     batch_size = min(max(1, int(batch_size)), 100)  # Limit between 1-100
+    from_bottom = bool(data.get('from_bottom', False))
+    force_web = bool(data.get('force_web', False))
     
     logger.info(f"Starting processing with batch_size: {batch_size}")
     
@@ -169,7 +183,7 @@ def start_processing():
             logger.info(f"Thread started for processing {batch_size} products")
             
             # Get unprocessed products
-            products = db.get_unprocessed_products(limit=batch_size)
+            products = db.get_unprocessed_products_from_bottom(limit=batch_size) if from_bottom else db.get_unprocessed_products(limit=batch_size)
             logger.info(f"Found {len(products) if products else 0} unprocessed products")
             
             if not products:
@@ -188,7 +202,34 @@ def start_processing():
                 processing_state['message'] = message
                 logger.info(f"Progress: {current}/{total} - {message}")
             
-            results = processor.process_batch(products, progress_callback)
+            # Wrap processor to pass force_web flag into async search
+            def _process_with_force(products_list, cb):
+                # monkey-patch: run each product with force_web
+                async def _runner():
+                    res = {
+                        'success': 0, 'failed': 0, 'skipped': 0, 'errors': [], 'validated': 0
+                    }
+                    for idx, prod in enumerate(products_list):
+                        try:
+                            if cb:
+                                cb(idx + 1, len(products_list), f"Processing {prod.get('Variant_SKU','Unknown')}")
+                            r = await processor.search_product_image(prod, force_web=force_web)
+                            if r and r.get('success'):
+                                res['success'] += 1
+                            else:
+                                res['failed'] += 1
+                        except Exception as e:
+                            res['failed'] += 1
+                            res['errors'].append(str(e))
+                    return res
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return loop.run_until_complete(_runner())
+                finally:
+                    loop.close()
+
+            results = _process_with_force(products, progress_callback) if force_web else processor.process_batch(products, progress_callback)
             
             logger.info(f"Processing complete: {results}")
             processing_state['message'] = f"Completed: {results['success']} successful, {results['failed']} failed"
@@ -218,8 +259,12 @@ def process_all_images():
         return jsonify({'error': 'Already processing'}), 400
     
     processing_state['active'] = True
+    processing_state['is_running'] = True
     processing_state['progress'] = 0
     processing_state['message'] = 'Starting to process all remaining products...'
+    data = request.get_json(silent=True) or {}
+    from_bottom = bool(data.get('from_bottom', False))
+    force_web = bool(data.get('force_web', False))
     
     # Start processing in background thread
     def process_all():
@@ -227,7 +272,11 @@ def process_all_images():
             # Get ALL unprocessed products
             cursor = db.conn.cursor()
             cursor.execute(
-                "SELECT COUNT(*) FROM products WHERE image_status = 'not_processed' OR image_status IS NULL"
+                """
+                SELECT COUNT(*) FROM products 
+                WHERE (image_status = 'not_processed' OR image_status IS NULL)
+                   AND (downloaded_image_path IS NULL OR downloaded_image_path = '')
+                """
             )
             total_remaining = cursor.fetchone()[0]
             cursor.close()
@@ -244,7 +293,7 @@ def process_all_images():
             processed_total = 0
             
             while True:
-                products = db.get_unprocessed_products(limit=batch_size)
+                products = db.get_unprocessed_products_from_bottom(limit=batch_size) if from_bottom else db.get_unprocessed_products(limit=batch_size)
                 if not products:
                     break
                 
@@ -254,7 +303,33 @@ def process_all_images():
                     processing_state['progress'] = overall_progress
                     processing_state['message'] = f"Processing {processed_total + current}/{total_remaining}: {message}"
                 
-                results = processor.process_batch(products, progress_callback)
+                # Use force web mode optionally
+                if force_web:
+                    def _process_with_force(products_list, cb):
+                        async def _runner():
+                            res = {'success': 0, 'failed': 0, 'skipped': 0, 'errors': [], 'validated': 0}
+                            for idx, prod in enumerate(products_list):
+                                try:
+                                    if cb:
+                                        cb(idx + 1, len(products_list), f"Processing {prod.get('Variant_SKU','Unknown')}")
+                                    r = await processor.search_product_image(prod, force_web=True)
+                                    if r and r.get('success'):
+                                        res['success'] += 1
+                                    else:
+                                        res['failed'] += 1
+                                except Exception as e:
+                                    res['failed'] += 1
+                                    res['errors'].append(str(e))
+                            return res
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            return loop.run_until_complete(_runner())
+                        finally:
+                            loop.close()
+                    results = _process_with_force(products, progress_callback)
+                else:
+                    results = processor.process_batch(products, progress_callback)
                 processed_total += results['success'] + results['failed']
                 
                 # Update overall progress
@@ -268,6 +343,7 @@ def process_all_images():
             processing_state['message'] = f"Error: {str(e)}"
         finally:
             processing_state['active'] = False
+            processing_state['is_running'] = False
     
     thread = threading.Thread(target=process_all)
     thread.start()
@@ -561,9 +637,21 @@ def download_file(filename):
 
 @app.route('/api/stats')
 def get_stats():
-    """Get current statistics"""
+    """Get current statistics with optimized remaining count"""
     
     stats = db.get_statistics()
+    
+    # Use optimized query for remaining count (same as dashboard)
+    cursor = db.conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM products WHERE (image_status = 'not_processed' OR image_status IS NULL) AND (downloaded_image_path IS NULL OR downloaded_image_path = '')"
+        )
+        remaining = cursor.fetchone()[0]
+    finally:
+        cursor.close()
+    stats['not_processed'] = remaining
+    
     insights = db.get_learning_insights()
     
     # Add learning system insights
@@ -771,8 +859,10 @@ def validate_images():
         
         logger.info(f"Running CLIP validation on {len(products)} products")
         
-        # Initialize validator
-        validator = CLIPValidator({'update_database': True})
+        # Initialize validator with clip config
+        clip_cfg = config.get('clip', {}).copy()
+        clip_cfg.update({'update_database': True})
+        validator = CLIPValidator(clip_cfg)
         
         # Run validation
         results = validator.validate_batch(products)

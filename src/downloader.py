@@ -29,8 +29,18 @@ async def fetch_image(session: aiohttp.ClientSession, url: str, max_retries: int
     for attempt in range(max_retries + 1):
         try:
             headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
+                'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Connection': 'keep-alive'
             }
+            # Add Referer from URL to improve CDN acceptance
+            try:
+                parsed = urlparse(url)
+                if parsed.netloc:
+                    headers['Referer'] = f"https://{parsed.netloc}"
+            except Exception:
+                pass
             
             async with session.get(url, headers=headers) as response:
                 if response.status == 200:

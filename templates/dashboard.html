@@ -13,11 +13,15 @@
             <h3>Process Images</h3>
             <p>Process custom batch size</p>
             <input type="number" id="batch-size" placeholder="Batch size" value="10" min="1" max="100">
+            <label style="display:block;margin-top:8px"><input type="checkbox" id="from-bottom"> Start from bottom</label>
+            <label style="display:block;margin-top:6px"><input type="checkbox" id="force-web"> Force web search (bypass cache)</label>
             <button onclick="processCustomBatch()">Start Processing</button>
         </div>
         
         <div class="action-card">
             <h3>Process All</h3>
+            <label style="display:block;margin-bottom:8px"><input type="checkbox" id="from-bottom-all"> Start from bottom</label>
+            <label style="display:block;margin-bottom:8px"><input type="checkbox" id="force-web-all"> Force web search (bypass cache)</label>
             <button class="btn btn-success process-all-btn" onclick="processAllImages()">
                 Process All ({{ stats.not_processed }} remaining)
             </button>
@@ -155,7 +159,9 @@ window.processCustomBatch = async function() {
     confirmAction(`Process ${batchSize} products?`, async () => {
         try {
             const result = await apiCall('/api/process', 'POST', { 
-                batch_size: batchSize  // Use correct parameter name
+                batch_size: batchSize,
+                from_bottom: document.getElementById('from-bottom').checked,
+                force_web: document.getElementById('force-web').checked
             });
             
             if (result.success) {
@@ -241,6 +247,11 @@ window.checkProgress = async function() {
             document.getElementById('processing-progress').textContent = percentage + '%';
             document.getElementById('processing-message').textContent = state.message || 'Processing...';
             
+            // Update stats every 5 seconds during processing
+            if (!window.statsUpdateInterval) {
+                window.statsUpdateInterval = setInterval(refreshStats, 5000);
+            }
+            
             // Check again in 1 second
             setTimeout(checkProgress, 1000);
             
@@ -248,12 +259,76 @@ window.checkProgress = async function() {
             document.getElementById('processing-message').textContent = state.message || 'Processing complete!';
             document.getElementById('processing-status').style.display = 'none';
             
-            // Reload stats
-            setTimeout(() => location.reload(), 2000);
+            // Clear stats polling interval
+            if (window.statsUpdateInterval) {
+                clearInterval(window.statsUpdateInterval);
+                window.statsUpdateInterval = null;
+            }
+            
+            // Final stats update without page reload
+            refreshStats();
         }
         
     } catch (error) {
         console.error('Progress check error:', error);
+    }
+}
+
+// Real-time stats updating function
+window.refreshStats = async function() {
+    try {
+        const response = await apiCall('/api/stats');
+        const stats = response.stats;
+        
+        // Update stat numbers in the dashboard
+        const statElements = {
+            'total_products': document.querySelector('.stat-card:nth-child(1) .stat-number'),
+            'approved': document.querySelector('.stat-card.approved .stat-number'),
+            'pending': document.querySelector('.stat-card.pending .stat-number'), 
+            'declined': document.querySelector('.stat-card.declined .stat-number')
+        };
+        
+        // Update each stat if element exists
+        Object.entries(statElements).forEach(([key, element]) => {
+            if (element && stats[key] !== undefined) {
+                element.textContent = stats[key];
+            }
+        });
+        
+        // Update remaining count
+        const remainingElements = document.querySelectorAll('.process-all-btn');
+        remainingElements.forEach(btn => {
+            if (btn.textContent.includes('remaining')) {
+                btn.innerHTML = btn.innerHTML.replace(/\d+/, stats.not_processed || 0);
+            }
+        });
+        
+        // Update progress bar
+        const progressBar = document.getElementById('main-progress');
+        if (progressBar && stats.completion_percentage !== undefined) {
+            progressBar.style.width = stats.completion_percentage + '%';
+            progressBar.textContent = stats.completion_percentage.toFixed(1) + '% Complete';
+        }
+        
+        // Update summary text
+        const summaryText = document.querySelector('p strong');
+        if (summaryText) {
+            const parent = summaryText.parentElement;
+            if (parent && parent.innerHTML.includes('products have approved images')) {
+                parent.innerHTML = `<strong>${stats.approved}</strong> of <strong>${stats.total_products}</strong> products have approved images.`;
+            }
+        }
+        
+        // Update not processed count
+        const notProcessedText = document.querySelectorAll('p')[1];
+        if (notProcessedText && notProcessedText.innerHTML.includes('not been processed')) {
+            notProcessedText.innerHTML = `<strong>${stats.not_processed || 0}</strong> products have not been processed yet.`;
+        }
+        
+        console.log('Stats updated:', stats);
+        
+    } catch (error) {
+        console.error('Failed to refresh stats:', error);
     }
 }
 
@@ -361,7 +436,11 @@ document.addEventListener('DOMContentLoaded', function() {
             try {
                 const response = await fetch('/api/process-all', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'}
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ 
+                        from_bottom: document.getElementById('from-bottom-all').checked,
+                        force_web: document.getElementById('force-web-all').checked
+                    })
                 });
                 const data = await response.json();
                 

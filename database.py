@@ -117,6 +117,10 @@ class ImageDatabase:
         self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_brand ON products(Brand)')
         self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_status ON products(image_status)')
         self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_batch ON products(batch_id)')
+        self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_image_path ON products(downloaded_image_path)')
+        self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_sorting ON products(Sorting)')
+        # Composite index for the optimized unprocessed query
+        self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_unprocessed ON products(image_status, downloaded_image_path)')
         
         self.conn.commit()
     
@@ -371,6 +375,17 @@ class ImageDatabase:
         
         self.conn.commit()
         return True
+
+    def mark_not_found(self, sku: str) -> None:
+        """Mark product as not_found to prevent repeated API usage in this session."""
+        try:
+            self.cursor.execute('''
+                UPDATE products SET image_status = 'not_found' WHERE Variant_SKU = ?
+            ''', (sku,))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            # best-effort; don't raise
     
     def record_feedback(self, sku: str, action: str):
         """Record user feedback for continuous learning"""
@@ -517,15 +532,27 @@ class ImageDatabase:
             cursor.close()
     
     def get_unprocessed_products(self, limit: int = 10) -> List[Dict]:
-        """Get products that haven't been processed yet"""
+        """Get products that haven't been processed yet - FIXED: exclude 'not_found' to prevent API waste"""
         
         results = self.cursor.execute('''
             SELECT * FROM products 
-            WHERE image_status = 'not_processed' 
+            WHERE (image_status = 'not_processed' OR image_status IS NULL)
+               AND (downloaded_image_path IS NULL OR downloaded_image_path = '')
             ORDER BY Sorting 
             LIMIT ?
         ''', (limit,)).fetchall()
         
+        return [dict(row) for row in results]
+
+    def get_unprocessed_products_from_bottom(self, limit: int = 10) -> List[Dict]:
+        """Get unprocessed products starting from the bottom (reverse sorting) - FIXED: exclude 'not_found' to prevent API waste"""
+        results = self.cursor.execute('''
+            SELECT * FROM products 
+            WHERE (image_status = 'not_processed' OR image_status IS NULL)
+               AND (downloaded_image_path IS NULL OR downloaded_image_path = '')
+            ORDER BY Sorting DESC 
+            LIMIT ?
+        ''', (limit,)).fetchall()
         return [dict(row) for row in results]
     
     def clear_images(self, clear_type: str) -> int:
