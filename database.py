@@ -555,6 +555,22 @@ class ImageDatabase:
         ''', (limit,)).fetchall()
         return [dict(row) for row in results]
     
+    def get_products_for_validation(self, limit: int = None) -> List[Dict]:
+        """Get products that have images but haven't been CLIP validated yet"""
+        query = '''
+            SELECT * FROM products 
+            WHERE downloaded_image_path IS NOT NULL 
+               AND downloaded_image_path != ''
+               AND (clip_score IS NULL OR clip_score = 0)
+               AND image_status IN ('pending', 'approved', 'declined')
+            ORDER BY Sorting
+        '''
+        if limit:
+            query += f' LIMIT {limit}'
+        
+        results = self.cursor.execute(query).fetchall()
+        return [dict(row) for row in results]
+    
     def clear_images(self, clear_type: str) -> int:
         """Clear images based on type"""
         
