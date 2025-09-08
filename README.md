@@ -26,6 +26,14 @@ A professional web-based image management system for NWK's ecommerce product cat
 
 ## 🚀 **Quick Start Guide**
 
+### **🔥 First Time Setup (GitHub Clone):**
+```bash
+# After cloning from GitHub, run setup first:
+./SETUP.sh
+# Then edit .env with your SerpAPI key
+```
+**📖 For detailed setup instructions, see [README_GITHUB.md](README_GITHUB.md)**
+
 ### **1. Start the Application:**
 ```bash
 ./START.sh
