@@ -1,0 +1,36 @@
+{
+  "successful_retailers": {
+    "checkers": 7,
+    "shoprite": 44,
+    "pnp": 1
+  },
+  "brand_keywords": {
+    "Nestle": [
+      "local",
+      "search"
+    ]
+  },
+  "rejected_sources": {
+    "superb hyper": 1,
+    "checkers": 5,
+    "shoprite": 10
+  },
+  "confidence_thresholds": {
+    "auto_approve": 80,
+    "auto_reject": 30
+  },
+  "search_strategies": {
+    "barcode_first": {
+      "success": 61,
+      "total": 76
+    },
+    "brand_title": {
+      "success": 4,
+      "total": 5
+    },
+    "retailer_specific": {
+      "success": 0,
+      "total": 0
+    }
+  }
+}

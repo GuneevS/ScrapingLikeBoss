@@ -1,0 +1,441 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - NWK Image System{% endblock %}
+
+{% block extra_css %}
+<style>
+    .progress-tracker {
+        background: white;
+        border-radius: 8px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    
+    .product-detail {
+        background: #f8f9fa;
+        padding: 1rem;
+        border-radius: 4px;
+        margin: 1rem 0;
+    }
+    
+    .live-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 1rem;
+        margin: 1rem 0;
+    }
+    
+    .live-stat {
+        text-align: center;
+        padding: 1rem;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border-radius: 8px;
+    }
+    
+    .live-stat.success { background: linear-gradient(135deg, #84fab0 0%, #8fd3f4 100%); }
+    .live-stat.pending { background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%); }
+    .live-stat.failed { background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%); }
+    
+    .status-indicator {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        margin-right: 5px;
+        animation: pulse 2s infinite;
+    }
+    
+    .status-indicator.active { background: #27ae60; }
+    .status-indicator.idle { background: #95a5a6; }
+    
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
+    }
+    
+    .action-log {
+        max-height: 200px;
+        overflow-y: auto;
+        background: #f4f4f4;
+        padding: 1rem;
+        border-radius: 4px;
+        font-family: monospace;
+        font-size: 0.9rem;
+    }
+    
+    .action-log-entry {
+        padding: 0.25rem 0;
+        border-bottom: 1px solid #e0e0e0;
+    }
+    
+    .action-log-entry:last-child {
+        border-bottom: none;
+    }
+    
+    .timestamp {
+        color: #7f8c8d;
+        font-size: 0.8rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2>System Overview</h2>
+    </div>
+    
+    <div class="dashboard-grid">
+        <div class="action-card">
+            <h3>Process Images</h3>
+            <p>Process custom batch size</p>
+            <input type="number" id="batch-size" placeholder="Batch size" value="10" min="1" max="100">
+            <label style="display:block;margin-top:8px"><input type="checkbox" id="from-bottom"> Start from bottom</label>
+            <label style="display:block;margin-top:6px"><input type="checkbox" id="force-web"> Force SERPAPI search (bypass cache)</label>
+            <button onclick="processCustomBatch()">Start Processing</button>
+        </div>
+        
+        <div class="action-card">
+            <h3>Process All</h3>
+            <label style="display:block;margin-bottom:8px"><input type="checkbox" id="from-bottom-all"> Start from bottom</label>
+            <label style="display:block;margin-bottom:8px"><input type="checkbox" id="force-web-all"> Force SERPAPI search</label>
+            <button class="btn btn-success process-all-btn" onclick="processAllImages()">
+                Process All ({{ stats.not_processed }} remaining)
+            </button>
+            <p class="card-description">Process all remaining images using SERPAPI</p>
+        </div>
+        
+        <div class="action-card">
+            <h3>Validate Images</h3>
+            <button class="btn btn-warning validate-all-btn" onclick="validateImages()">
+                Run CLIP Validation
+            </button>
+            <p class="card-description">AI quality assurance check</p>
+        </div>
+    </div>
+    
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div>Total Products</div>
+            <div class="stat-number" id="stat-total">{{ stats.total_products }}</div>
+            <div>In Database</div>
+        </div>
+        
+        <div class="stat-card approved">
+            <div>Approved</div>
+            <div class="stat-number" id="stat-approved">{{ stats.approved }}</div>
+            <div>Ready for Export</div>
+        </div>
+        
+        <div class="stat-card pending">
+            <div>Pending Review</div>
+            <div class="stat-number" id="stat-pending">{{ stats.pending }}</div>
+            <div>Needs Attention</div>
+        </div>
+        
+        <div class="stat-card declined">
+            <div>Not Processed</div>
+            <div class="stat-number" id="stat-not-processed">{{ stats.not_processed }}</div>
+            <div>Available for Processing</div>
+        </div>
+    </div>
+</div>
+
+<!-- Enhanced Progress Tracker -->
+<div class="card processing-status-hidden" id="processing-status">
+    <div class="card-header">
+        <h2><span class="status-indicator active"></span>Processing Status</h2>
+    </div>
+    
+    <div class="progress-tracker">
+        <!-- Main Progress Bar -->
+        <div class="progress-bar" style="margin-bottom: 1rem;">
+            <div class="progress-fill" id="processing-progress" data-width="0">
+                0%
+            </div>
+        </div>
+        
+        <!-- Current Product Details -->
+        <div class="product-detail" id="current-product-detail">
+            <h4>Currently Processing:</h4>
+            <p><strong>SKU:</strong> <span id="current-sku">-</span></p>
+            <p><strong>Product:</strong> <span id="current-product">-</span></p>
+            <p><strong>Action:</strong> <span id="current-action">Initializing...</span></p>
+            <p><strong>Progress:</strong> <span id="product-count">0</span> of <span id="product-total">0</span> products</p>
+        </div>
+        
+        <!-- Live Statistics -->
+        <div class="live-stats">
+            <div class="live-stat">
+                <div class="stat-number" id="serpapi-calls">0</div>
+                <div>SERPAPI Calls</div>
+            </div>
+            <div class="live-stat success">
+                <div class="stat-number" id="images-found">0</div>
+                <div>Images Found</div>
+            </div>
+            <div class="live-stat success">
+                <div class="stat-number" id="images-downloaded">0</div>
+                <div>Downloaded</div>
+            </div>
+            <div class="live-stat failed">
+                <div class="stat-number" id="images-skipped">0</div>
+                <div>Skipped</div>
+            </div>
+        </div>
+        
+        <!-- Today's Results -->
+        <div class="product-detail" id="today-stats" style="display:none;">
+            <h4>Today's Processing Results:</h4>
+            <p>✅ Approved: <span id="today-approved">0</span></p>
+            <p>⏳ Pending: <span id="today-pending">0</span></p>
+            <p>❌ Declined: <span id="today-declined">0</span></p>
+            <p>🔍 Not Found: <span id="today-not-found">0</span></p>
+        </div>
+        
+        <!-- Action Log -->
+        <div class="action-log" id="action-log">
+            <div class="action-log-entry">
+                <span class="timestamp">--:--:--</span> Waiting to start...
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>System Health</h2>
+    </div>
+    
+    <div id="system-health">
+        <p>Checking connections...</p>
+    </div>
+</div>
+
+<script>
+// Enhanced progress tracking
+let actionLog = [];
+let progressInterval = null;
+
+// Process custom batch
+window.processCustomBatch = async function() {
+    const batchSize = parseInt(document.getElementById('batch-size').value) || 10;
+    
+    if (batchSize < 1 || batchSize > 100) {
+        showAlert('Batch size must be between 1 and 100', 'error');
+        return;
+    }
+    
+    confirmAction(`Process ${batchSize} products using SERPAPI?`, async () => {
+        try {
+            const result = await apiCall('/api/process', 'POST', { 
+                batch_size: batchSize,
+                from_bottom: document.getElementById('from-bottom').checked,
+                force_web: document.getElementById('force-web').checked
+            });
+            
+            if (result.success) {
+                showAlert(`Processing ${batchSize} products via SERPAPI!`, 'success');
+                startProgressTracking();
+            } else {
+                showAlert(result.message || 'Failed to start processing', 'error');
+            }
+        } catch (error) {
+            showAlert('Failed to start processing: ' + error.message, 'error');
+        }
+    });
+}
+
+// Process all images
+window.processAllImages = async () => {
+    const button = document.querySelector('.process-all-btn');
+    
+    confirmAction('Process all remaining images using SERPAPI? This may take a while.', async () => {
+        try {
+            const response = await fetch('/api/process-all', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ 
+                    from_bottom: document.getElementById('from-bottom-all').checked,
+                    force_web: document.getElementById('force-web-all').checked
+                })
+            });
+            const data = await response.json();
+            
+            if (response.ok) {
+                showAlert(`Processing all remaining products via SERPAPI!`, 'success');
+                startProgressTracking();
+            } else {
+                showAlert('Error: ' + data.error, 'error');
+            }
+        } catch (error) {
+            showAlert('Error: ' + error.message, 'error');
+        }
+    });
+};
+
+// Start enhanced progress tracking
+function startProgressTracking() {
+    document.getElementById('processing-status').style.display = 'block';
+    document.getElementById('processing-status').classList.remove('processing-status-hidden');
+    
+    // Clear previous log
+    actionLog = [];
+    document.getElementById('action-log').innerHTML = '';
+    
+    // Start polling for progress
+    if (progressInterval) clearInterval(progressInterval);
+    progressInterval = setInterval(updateProgress, 1000);
+    updateProgress();
+}
+
+// Update progress with detailed tracking
+async function updateProgress() {
+    try {
+        const state = await apiCall('/api/progress');
+        
+        if (state.is_running) {
+            // Update progress bar
+            const percentage = state.progress || 0;
+            document.getElementById('processing-progress').style.width = percentage + '%';
+            document.getElementById('processing-progress').textContent = percentage + '%';
+            
+            // Update current product details
+            document.getElementById('current-sku').textContent = state.current_sku || '-';
+            document.getElementById('current-product').textContent = state.current_product || 'Loading...';
+            document.getElementById('current-action').textContent = state.current_action || 'Processing';
+            document.getElementById('product-count').textContent = state.products_processed || 0;
+            document.getElementById('product-total').textContent = state.products_total || 0;
+            
+            // Update live statistics
+            document.getElementById('serpapi-calls').textContent = state.serpapi_calls || 0;
+            document.getElementById('images-found').textContent = state.images_found || 0;
+            document.getElementById('images-downloaded').textContent = state.images_downloaded || 0;
+            document.getElementById('images-skipped').textContent = state.images_skipped || 0;
+            
+            // Update today's stats if available
+            if (state.today_stats) {
+                document.getElementById('today-stats').style.display = 'block';
+                document.getElementById('today-approved').textContent = state.today_stats.approved || 0;
+                document.getElementById('today-pending').textContent = state.today_stats.pending || 0;
+                document.getElementById('today-declined').textContent = state.today_stats.declined || 0;
+                document.getElementById('today-not-found').textContent = state.today_stats.not_found || 0;
+            }
+            
+            // Add to action log
+            if (state.message && state.message !== actionLog[actionLog.length - 1]) {
+                actionLog.push(state.message);
+                addToActionLog(state.message);
+            }
+            
+            // Update main stats periodically
+            if (state.products_processed % 5 === 0) {
+                refreshStats();
+            }
+            
+        } else {
+            // Processing complete
+            clearInterval(progressInterval);
+            progressInterval = null;
+            
+            document.getElementById('current-action').textContent = 'Complete!';
+            addToActionLog('Processing finished: ' + (state.message || 'Complete'));
+            
+            // Final stats update
+            refreshStats();
+            
+            // Hide after 5 seconds
+            setTimeout(() => {
+                document.getElementById('processing-status').classList.add('processing-status-hidden');
+            }, 5000);
+        }
+        
+    } catch (error) {
+        console.error('Progress update error:', error);
+    }
+}
+
+// Add entry to action log
+function addToActionLog(message) {
+    const timestamp = new Date().toLocaleTimeString();
+    const logDiv = document.getElementById('action-log');
+    
+    const entry = document.createElement('div');
+    entry.className = 'action-log-entry';
+    entry.innerHTML = `<span class="timestamp">${timestamp}</span> ${message}`;
+    
+    logDiv.appendChild(entry);
+    logDiv.scrollTop = logDiv.scrollHeight;
+    
+    // Keep only last 20 entries
+    while (logDiv.children.length > 20) {
+        logDiv.removeChild(logDiv.firstChild);
+    }
+}
+
+// Real-time stats update
+window.refreshStats = async function() {
+    try {
+        const response = await apiCall('/api/stats');
+        const stats = response.stats;
+        
+        // Update stat cards
+        document.getElementById('stat-total').textContent = stats.total_products || 0;
+        document.getElementById('stat-approved').textContent = stats.approved || 0;
+        document.getElementById('stat-pending').textContent = stats.pending || 0;
+        document.getElementById('stat-not-processed').textContent = stats.not_processed || 0;
+        
+        // Update Process All button text
+        const processAllBtns = document.querySelectorAll('.process-all-btn');
+        processAllBtns.forEach(btn => {
+            btn.innerHTML = `Process All (${stats.not_processed || 0} remaining)`;
+        });
+        
+        console.log('Stats updated:', stats);
+        
+    } catch (error) {
+        console.error('Failed to refresh stats:', error);
+    }
+}
+
+// Check system health
+window.checkSystemHealth = async function() {
+    try {
+        const health = await apiCall('/api/test-connection');
+        
+        let html = '<ul>';
+        html += `<li>Database: ${health.database ? '✅ Connected' : '❌ Not Connected'}</li>`;
+        html += `<li>SERPAPI Key: ${health.api_key ? '✅ Configured' : '❌ Not Configured'}</li>`;
+        html += `<li>Folders: ${health.folders ? '✅ Ready' : '❌ Missing'}</li>`;
+        html += '</ul>';
+        
+        document.getElementById('system-health').innerHTML = html;
+        
+    } catch (error) {
+        document.getElementById('system-health').innerHTML = 
+            '<p class="alert alert-error">Failed to check system health</p>';
+    }
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+    checkSystemHealth();
+    
+    // Check if already processing
+    apiCall('/api/progress').then(state => {
+        if (state.is_running) {
+            startProgressTracking();
+        }
+    }).catch(error => {
+        console.warn('Could not check initial processing status:', error);
+    });
+    
+    // Refresh stats every 10 seconds
+    setInterval(refreshStats, 10000);
+});
+</script>
+
+{% endblock %}

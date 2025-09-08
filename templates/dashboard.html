@@ -420,7 +420,7 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
         
-        const button = document.querySelector('.validate-all-btn');
+        const button = document.querySelector('.process-all-btn');
         
         confirmAction('Process all remaining images? This may take a while.', async () => {
             if (processing) {
@@ -446,7 +446,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 if (response.ok) {
                     showAlert(`Processing complete! Processed ${data.processed} images`, 'success');
-                    await loadStats();
+                    await refreshStats();
                 } else {
                     showAlert('Error: ' + data.error, 'error');
                 }

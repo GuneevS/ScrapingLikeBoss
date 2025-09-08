@@ -36,3 +36,5 @@
 ### Notes
 - Apple Silicon uses MPS; NVIDIA uses CUDA.
 - Ensure `opencv-python-headless` installed for server environments.
+- **Package Compatibility**: Use numpy==1.26.4 with scikit-image==0.21.0 to avoid binary incompatibility errors.
+- **Status Handling**: `not_found` products are reprocessable and included in remaining counts.

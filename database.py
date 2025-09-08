@@ -532,11 +532,11 @@ class ImageDatabase:
             cursor.close()
     
     def get_unprocessed_products(self, limit: int = 10) -> List[Dict]:
-        """Get products that haven't been processed yet - FIXED: exclude 'not_found' to prevent API waste"""
+        """Get products that haven't been processed yet - includes 'not_found' for reprocessing"""
         
         results = self.cursor.execute('''
             SELECT * FROM products 
-            WHERE (image_status = 'not_processed' OR image_status IS NULL)
+            WHERE (image_status = 'not_processed' OR image_status IS NULL OR image_status = 'not_found')
                AND (downloaded_image_path IS NULL OR downloaded_image_path = '')
             ORDER BY Sorting 
             LIMIT ?
@@ -545,10 +545,10 @@ class ImageDatabase:
         return [dict(row) for row in results]
 
     def get_unprocessed_products_from_bottom(self, limit: int = 10) -> List[Dict]:
-        """Get unprocessed products starting from the bottom (reverse sorting) - FIXED: exclude 'not_found' to prevent API waste"""
+        """Get unprocessed products starting from the bottom (reverse sorting) - includes 'not_found' for reprocessing"""
         results = self.cursor.execute('''
             SELECT * FROM products 
-            WHERE (image_status = 'not_processed' OR image_status IS NULL)
+            WHERE (image_status = 'not_processed' OR image_status IS NULL OR image_status = 'not_found')
                AND (downloaded_image_path IS NULL OR downloaded_image_path = '')
             ORDER BY Sorting DESC 
             LIMIT ?
@@ -636,7 +636,7 @@ class ImageDatabase:
             elif status_filter == 'with_images':
                 conditions.append("downloaded_image_path IS NOT NULL AND downloaded_image_path != ''")
             elif status_filter == 'not_processed':
-                conditions.append("(image_status = 'not_processed' OR image_status IS NULL)")
+                conditions.append("(image_status = 'not_processed' OR image_status IS NULL OR image_status = 'not_found')")
             
             # Combine conditions
             if conditions:

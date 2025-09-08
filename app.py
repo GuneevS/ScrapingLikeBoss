@@ -74,14 +74,24 @@ config = load_config()
 # Initialize processor
 processor = IntelligentImageProcessor(config, db)
 
-# Processing state
+# Processing state with enhanced tracking
 processing_state = {
     'active': False,
     'is_running': False,
     'current_batch': None,
     'progress': 0,
     'message': 'Ready',
-    'results': {}
+    'results': {},
+    'current_product': None,
+    'current_sku': None,
+    'products_processed': 0,
+    'products_total': 0,
+    'current_action': 'idle',
+    'images_found': 0,
+    'images_downloaded': 0,
+    'images_skipped': 0,
+    'serpapi_calls': 0,
+    'last_update': None
 }
 
 # Configure logging
@@ -99,7 +109,7 @@ def index():
     cursor = db.conn.cursor()
     try:
         cursor.execute(
-            "SELECT COUNT(*) FROM products WHERE (image_status = 'not_processed' OR image_status IS NULL) AND (downloaded_image_path IS NULL OR downloaded_image_path = '')"
+            "SELECT COUNT(*) FROM products WHERE (image_status = 'not_processed' OR image_status IS NULL OR image_status = 'not_found') AND (downloaded_image_path IS NULL OR downloaded_image_path = '')"
         )
         remaining = cursor.fetchone()[0]
     finally:
@@ -200,6 +210,19 @@ def start_processing():
             def progress_callback(current, total, message):
                 processing_state['progress'] = int((current / total) * 100)
                 processing_state['message'] = message
+                processing_state['products_processed'] = current
+                processing_state['products_total'] = total
+                processing_state['last_update'] = datetime.now().isoformat()
+                # Extract SKU from message if present
+                if 'Processing' in message:
+                    parts = message.split(' ')
+                    if len(parts) > 1:
+                        processing_state['current_sku'] = parts[-1]
+                        # Get product details
+                        prod = db.get_product_by_sku(parts[-1])
+                        if prod:
+                            processing_state['current_product'] = f"{prod.get('Brand', '')} {prod.get('Title', '')}"
+                processing_state['current_action'] = 'searching' if 'Searching' in message else 'processing'
                 logger.info(f"Progress: {current}/{total} - {message}")
             
             # Wrap processor to pass force_web flag into async search
@@ -255,13 +278,30 @@ def process_all_images():
     
     # Check if already processing
     global processing_state
-    if processing_state['active']:
-        return jsonify({'error': 'Already processing'}), 400
+    if processing_state.get('active') or processing_state.get('is_running'):
+        logger.warning("Process-all called while already processing")
+        return jsonify({'error': 'Already processing, please wait for current batch to complete'}), 400
     
-    processing_state['active'] = True
-    processing_state['is_running'] = True
-    processing_state['progress'] = 0
-    processing_state['message'] = 'Starting to process all remaining products...'
+    # Reset state completely before starting
+    processing_state = {
+        'active': True,
+        'is_running': True,
+        'current_batch': None,
+        'progress': 0,
+        'message': 'Starting to process all remaining products...',
+        'results': {},
+        'current_product': None,
+        'current_sku': None,
+        'products_processed': 0,
+        'products_total': 0,
+        'current_action': 'initializing',
+        'images_found': 0,
+        'images_downloaded': 0,
+        'images_skipped': 0,
+        'serpapi_calls': 0,
+        'last_update': datetime.now().isoformat()
+    }
+    
     data = request.get_json(silent=True) or {}
     from_bottom = bool(data.get('from_bottom', False))
     force_web = bool(data.get('force_web', False))
@@ -269,12 +309,13 @@ def process_all_images():
     # Start processing in background thread
     def process_all():
         try:
+            logger.info(f"Starting process_all with from_bottom={from_bottom}, force_web={force_web}")
             # Get ALL unprocessed products
             cursor = db.conn.cursor()
             cursor.execute(
                 """
                 SELECT COUNT(*) FROM products 
-                WHERE (image_status = 'not_processed' OR image_status IS NULL)
+                WHERE (image_status = 'not_processed' OR image_status IS NULL OR image_status = 'not_found')
                    AND (downloaded_image_path IS NULL OR downloaded_image_path = '')
                 """
             )
@@ -337,22 +378,54 @@ def process_all_images():
             
             processing_state['message'] = f"Completed processing {processed_total} products"
             processing_state['progress'] = 100
+            logger.info(f"Process-all completed: processed {processed_total} products")
             
         except Exception as e:
-            logger.error(f"Processing error: {str(e)}")
+            logger.error(f"Processing error in process_all: {str(e)}", exc_info=True)
             processing_state['message'] = f"Error: {str(e)}"
         finally:
+            # Ensure state is properly reset
             processing_state['active'] = False
             processing_state['is_running'] = False
+            processing_state['current_action'] = 'idle'
+            logger.info("Process-all thread finished, state reset")
     
     thread = threading.Thread(target=process_all)
+    thread.daemon = True  # Make thread daemon so it doesn't block shutdown
     thread.start()
     
     return jsonify({'success': True, 'message': 'Processing all remaining products', 'processed': 'all'})
 
 @app.route('/api/progress')
 def get_progress():
-    """Get processing progress"""
+    """Get enhanced processing progress with detailed tracking"""
+    # Add real-time stats if processing
+    if processing_state['is_running']:
+        cursor = db.conn.cursor()
+        try:
+            # Get counts of processed images today
+            cursor.execute("""
+                SELECT 
+                    COUNT(CASE WHEN image_status = 'approved' THEN 1 END) as approved,
+                    COUNT(CASE WHEN image_status = 'pending' THEN 1 END) as pending,
+                    COUNT(CASE WHEN image_status = 'declined' THEN 1 END) as declined,
+                    COUNT(CASE WHEN image_status = 'not_found' THEN 1 END) as not_found
+                FROM products 
+                WHERE processed_date >= date('now', 'start of day')
+            """)
+            row = cursor.fetchone()
+            if row:
+                processing_state['today_stats'] = {
+                    'approved': row[0],
+                    'pending': row[1],
+                    'declined': row[2],
+                    'not_found': row[3]
+                }
+        except:
+            pass
+        finally:
+            cursor.close()
+    
     return jsonify(processing_state)
 
 @app.route('/review')
@@ -645,7 +718,7 @@ def get_stats():
     cursor = db.conn.cursor()
     try:
         cursor.execute(
-            "SELECT COUNT(*) FROM products WHERE (image_status = 'not_processed' OR image_status IS NULL) AND (downloaded_image_path IS NULL OR downloaded_image_path = '')"
+            "SELECT COUNT(*) FROM products WHERE (image_status = 'not_processed' OR image_status IS NULL OR image_status = 'not_found') AND (downloaded_image_path IS NULL OR downloaded_image_path = '')"
         )
         remaining = cursor.fetchone()[0]
     finally:
@@ -1182,4 +1255,5 @@ if __name__ == '__main__':
     print(f"Open browser to: http://localhost:8847")
     print("="*60 + "\n")
     
-    app.run(debug=True, host='0.0.0.0', port=8847)
+    # Disable auto-reload in debug mode to prevent crashes during processing
+    app.run(debug=True, host='0.0.0.0', port=8847, use_reloader=False)

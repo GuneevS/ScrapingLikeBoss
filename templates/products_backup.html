@@ -1,0 +1,1114 @@
+{% extends "base.html" %}
+
+{% block title %}Product Dashboard - NWK Image System{% endblock %}
+
+{% block extra_css %}
+<style>
+    .filters-panel {
+        background: #f8f9fa;
+        padding: 1.5rem;
+        border-radius: 8px;
+        margin-bottom: 2rem;
+    }
+    
+    .filter-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+    
+    .search-box {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+    }
+    
+    .search-box input {
+        flex: 1;
+    }
+    
+    .products-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 1rem;
+    }
+    
+    .products-table th {
+        background: #34495e;
+        color: white;
+        padding: 0.75rem;
+        text-align: left;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+    }
+    
+    .products-table td {
+        padding: 0.75rem;
+        border-bottom: 1px solid #e0e0e0;
+    }
+    
+    .products-table tr:hover {
+        background: #f8f9fa;
+    }
+    
+    .product-image-thumb {
+        width: 60px;
+        height: 60px;
+        object-fit: cover;
+        cursor: zoom-in;
+        border-radius: 4px;
+    }
+    
+    .no-image {
+        width: 60px;
+        height: 60px;
+        background: #e0e0e0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        color: #666;
+    }
+    
+    .status-badge {
+        padding: 0.25rem 0.75rem;
+        border-radius: 12px;
+        font-size: 0.875rem;
+        font-weight: 500;
+        display: inline-block;
+    }
+    
+    .status-approved {
+        background: #d4edda;
+        color: #155724;
+    }
+    
+    .status-pending {
+        background: #fff3cd;
+        color: #856404;
+    }
+    
+    .status-declined {
+        background: #f8d7da;
+        color: #721c24;
+    }
+    
+    .status-not_processed {
+        background: #e0e0e0;
+        color: #666;
+    }
+    
+    .bulk-select {
+        width: 20px;
+        height: 20px;
+        cursor: pointer;
+    }
+    
+    .pagination button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+    
+    .bulk-actions-bar {
+        background: #2c3e50;
+        color: white;
+        padding: 1rem;
+        border-radius: 4px;
+        display: none;
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        margin-bottom: 1rem;
+    }
+    
+    .bulk-actions-bar.active {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    
+    .pagination {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 2rem;
+    }
+    
+    .page-btn {
+        padding: 0.5rem 1rem;
+        border: 1px solid #ddd;
+        background: white;
+        cursor: pointer;
+        border-radius: 4px;
+    }
+    
+    .page-btn:hover {
+        background: #f8f9fa;
+    }
+    
+    .page-btn.active {
+        background: #3498db;
+        color: white;
+        border-color: #3498db;
+    }
+    
+    .stats-summary {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 1rem;
+        margin-bottom: 2rem;
+    }
+    
+    .stat-box {
+        background: white;
+        padding: 1rem;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        text-align: center;
+    }
+    
+    .stat-value {
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: #2c3e50;
+    }
+    
+    .stat-label {
+        font-size: 0.875rem;
+        color: #666;
+        margin-top: 0.25rem;
+    }
+    
+    .table-container {
+        overflow-x: auto;
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .export-selected-btn {
+        background: #27ae60;
+        color: white;
+        padding: 0.5rem 1rem;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    
+    .loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0,0,0,0.5);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+    }
+    
+    .loading-overlay.active {
+        display: flex;
+    }
+    
+    .loading-spinner {
+        background: white;
+        padding: 2rem;
+        border-radius: 8px;
+        text-align: center;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2>Product Dashboard</h2>
+    </div>
+    
+    <!-- Statistics Summary -->
+    <div class="stats-summary" id="stats-summary">
+        <div class="stat-box">
+            <div class="stat-value" id="stat-total">0</div>
+            <div class="stat-label">Total Products</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" id="stat-approved">0</div>
+            <div class="stat-label">Approved</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" id="stat-pending">0</div>
+            <div class="stat-label">Pending</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" id="stat-declined">0</div>
+            <div class="stat-label">Declined</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" id="stat-unprocessed">0</div>
+            <div class="stat-label">Not Processed</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" id="stat-selected">0</div>
+            <div class="stat-label">Selected</div>
+        </div>
+    </div>
+    
+    <!-- Filters Panel -->
+    <div class="filters-panel">
+        <h3>Filters & Search</h3>
+        
+        <div class="search-box">
+            <input type="text" id="search-input" class="form-control" 
+                   placeholder="Search by SKU, Title, Brand, or Barcode...">
+            <button class="btn" onclick="applyFilters()">Search</button>
+            <button class="btn" onclick="clearFilters()">Clear</button>
+        </div>
+        
+        <div class="filter-row">
+            <div class="form-group">
+                <label class="form-label">Status</label>
+                <select id="filter-status" onchange="applyFilters()">
+                    <option value="">All Status</option>
+                    <option value="approved">Approved</option>
+                    <option value="pending">Pending</option>
+                    <option value="declined">Declined</option>
+                    <option value="not_processed">Not Processed</option>
+                </select>
+                
+                <select id="filter-clip" onchange="applyFilters()">
+                    <option value="">All CLIP Scores</option>
+                    <option value="auto_approve">✅ Auto Approved (70%+)</option>
+                    <option value="manual_review">⚠️ Needs Review (40-70%)</option>
+                    <option value="auto_reject">❌ Auto Rejected (<40%)</option>
+                    <option value="not_validated">Not Validated</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Brand</label>
+                <select id="filter-brand" class="form-control" onchange="applyFilters()">
+                    <option value="">All Brands</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Tier 1</label>
+                <select id="filter-tier1" class="form-control" onchange="applyFilters()">
+                    <option value="">All Categories</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Has Image</label>
+                <select id="filter-has-image" class="form-control" onchange="applyFilters()">
+                    <option value="">All</option>
+                    <option value="yes">With Images</option>
+                    <option value="no">Without Images</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Confidence</label>
+                <select id="filter-confidence" class="form-control" onchange="applyFilters()">
+                    <option value="">All</option>
+                    <option value="high">High (>80%)</option>
+                    <option value="medium">Medium (50-80%)</option>
+                    <option value="low">Low (<50%)</option>
+                </select>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Bulk Actions Bar -->
+    <div class="bulk-actions-bar" id="bulk-actions-bar">
+        <div>
+            <span id="selected-count">0</span> products selected
+        </div>
+        <div>
+            <button class="btn btn-success" onclick="bulkApprove()">Approve Selected</button>
+            <button class="btn btn-danger" onclick="bulkDecline()">Decline Selected</button>
+            <button class="btn btn-primary" onclick="bulkReprocess()">Reprocess Selected</button>
+            <button class="btn btn-info" onclick="bulkValidateCLIP()">Validate CLIP</button>
+            <button class="btn btn-success" onclick="bulkApproveHighCLIP()">Approve High CLIP (>70%)</button>
+            <button class="export-selected-btn" onclick="exportSelected()">Export Selected</button>
+            <button class="btn" onclick="clearSelection()">Clear Selection</button>
+        </div>
+    </div>
+    
+    <!-- Products Table -->
+    <div class="table-container">
+        <table class="products-table" id="products-table">
+            <thead>
+                <tr>
+                    <th><input type="checkbox" id="select-all" onchange="toggleSelectAll()"></th>
+                    <th>Image</th>
+                    <th>SKU</th>
+                    <th>Title</th>
+                    <th>Brand</th>
+                    <th>Barcode</th>
+                    <th>Status</th>
+                    <th>Confidence</th>
+                    <th>CLIP Score</th>
+                    <th>Tier 1</th>
+                    <th>Tier 2</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="products-tbody">
+                <!-- Products will be loaded here -->
+            </tbody>
+        </table>
+    </div>
+    
+    <!-- Pagination -->
+    <div class="pagination" id="pagination">
+        <!-- Pagination buttons will be generated here -->
+    </div>
+</div>
+
+<!-- Loading Overlay -->
+<div class="loading-overlay" id="loading-overlay">
+    <div class="loading-spinner">
+        <h3>Loading...</h3>
+        <p>Please wait while we fetch the products</p>
+    </div>
+</div>
+
+<!-- Image Preview Modal -->
+<div id="imageModal" class="modal" style="display: none;">
+    <div class="modal-content" style="max-width: 80%; max-height: 80%;">
+        <div class="modal-header">
+            <h3 id="modalTitle">Product Image</h3>
+            <button onclick="closeModal()" style="float: right; font-size: 24px; background: none; border: none; cursor: pointer;">&times;</button>
+        </div>
+        <div class="modal-body" style="text-align: center;">
+            <img id="modalImage" src="" alt="" style="max-width: 100%; max-height: 60vh; object-fit: contain;">
+            <div id="modalInfo" style="margin-top: 1rem; text-align: left;"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-success" onclick="approveFromModal()">Approve</button>
+            <button class="btn btn-danger" onclick="declineFromModal()">Decline</button>
+            <button class="btn" onclick="closeModal()">Close</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// Global variables
+let currentPage = 1;
+let itemsPerPage = 50;
+
+    <!-- Image Preview Modal -->
+    <div id="imageModal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 80%; max-height: 80%;">
+            <div class="modal-header">
+                <h3 id="modalTitle">Product Image</h3>
+                <button onclick="closeModal()" style="float: right; font-size: 24px; background: none; border: none; cursor: pointer;">&times;</button>
+            </div>
+            <div class="modal-body" style="text-align: center;">
+                <img id="modalImage" src="" alt="" style="max-width: 100%; max-height: 60vh; object-fit: contain;">
+                <div id="modalInfo" style="margin-top: 1rem; text-align: left;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-success" onclick="approveFromModal()">Approve</button>
+                <button class="btn btn-danger" onclick="declineFromModal()">Decline</button>
+                <button class="btn" onclick="closeModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    // Global variables
+    let currentPage = 1;
+    let itemsPerPage = 50;
+    let allProducts = [];
+    let filteredProducts = [];
+    let selectedProducts = new Set();
+    let currentModalSku = '';
+
+    async function bulkValidateCLIP() {
+        if (!confirm(`Run CLIP validation on ${selectedProducts.size} selected products?`)) return;
+        
+        showLoading(true);
+        try {
+            const skus = Array.from(selectedProducts);
+            await apiCall('/api/validate-images', 'POST', {
+                skus: skus,
+                validate_all: false
+            });
+            
+            showAlert('CLIP validation complete', 'success');
+            clearSelection();
+            await loadProducts();
+        } catch (error) {
+            showAlert('Validation failed: ' + error.message, 'error');
+        } finally {
+            showLoading(false);
+        }
+    }
+
+    async function bulkApproveHighCLIP() {
+        if (!confirm('Auto-approve all products with CLIP score > 60%?')) return;
+        
+        showLoading(true);
+        try {
+            // Filter products with high CLIP scores
+            const highScoreProducts = allProducts.filter(p => 
+                p.clip_confidence && p.clip_confidence > 0.6 && p.image_status === 'pending'
+            );
+            
+            if (highScoreProducts.length === 0) {
+                showAlert('No pending products with CLIP score > 60%', 'warning');
+                return;
+            }
+            
+            const skus = highScoreProducts.map(p => p.Variant_SKU);
+            await apiCall('/api/bulk-action', 'POST', {
+                action: 'approve',
+                skus: skus
+            });
+            
+            showAlert(`Approved ${skus.length} products with high CLIP scores`, 'success');
+            await loadProducts();
+        } catch (error) {
+            showAlert('Bulk approve failed: ' + error.message, 'error');
+        } finally {
+            showLoading(false);
+        }
+    }
+
+    // Load products on page load
+    document.addEventListener('DOMContentLoaded', function() {
+        loadProducts();
+        loadFilterOptions();
+    });
+
+    // Load all products
+    async function loadProducts() {
+        showLoading(true);
+        try {
+            const response = await apiCall('/api/products/all');
+            allProducts = response.products;
+            applyFilters();
+            updateStatistics();
+        } catch (error) {
+            showAlert('Failed to load products: ' + error.message, 'error');
+        } finally {
+            showLoading(false);
+        }
+    }
+
+    // Load filter options
+    async function loadFilterOptions() {
+        try {
+            const response = await apiCall('/api/products/filters');
+            
+            // Populate brand filter
+            const brandSelect = document.getElementById('filter-brand');
+            response.brands.forEach(brand => {
+                if (brand) {
+                    const option = document.createElement('option');
+                    option.value = brand;
+                    option.textContent = brand;
+                    brandSelect.appendChild(option);
+                }
+            });
+            
+            // Populate tier1 filter
+            const tier1Select = document.getElementById('filter-tier1');
+            response.tier1s.forEach(tier => {
+                if (tier) {
+                    const option = document.createElement('option');
+                    option.value = tier;
+                    option.textContent = tier;
+                    tier1Select.appendChild(option);
+                }
+            });
+        } catch (error) {
+            console.error('Failed to load filter options:', error);
+        }
+    }
+
+    // Apply filters
+    function applyFilters() {
+        const searchTerm = document.getElementById('search-input').value.toLowerCase();
+        const statusFilter = document.getElementById('filter-status').value;
+        const clipFilter = document.getElementById('filter-clip').value;
+        const brandFilter = document.getElementById('filter-brand').value;
+        const tierFilter = document.getElementById('filter-tier1').value;
+        const hasImageFilter = document.getElementById('filter-has-image').value;
+        const confidenceFilter = document.getElementById('filter-confidence').value;
+        
+        filteredProducts = allProducts.filter(product => {
+            // Search filter
+            if (searchTerm) {
+                const searchableText = `${product.Variant_SKU} ${product.Title} ${product.Brand} ${product.Variant_Barcode}`.toLowerCase();
+                if (!searchableText.includes(searchTerm)) return false;
+            }
+            
+            // Status filter
+            if (statusFilter && product.image_status !== statusFilter) return false;
+            
+            // CLIP filter
+            if (clipFilter) {
+                if (clipFilter === 'not_validated' && product.clip_action) return false;
+                if (clipFilter !== 'not_validated' && product.clip_action !== clipFilter) return false;
+            }
+            
+            // Brand filter
+            if (brandFilter && product.Brand !== brandFilter) return false;
+            
+            // Tier1 filter
+            if (tierFilter && product.Tier_1 !== tierFilter) return false;
+            
+            // Has image filter
+            if (hasImageFilter === 'yes' && !product.downloaded_image_path) return false;
+            if (hasImageFilter === 'no' && product.downloaded_image_path) return false;
+            
+            // Confidence filter
+            const confidence = product.confidence || 0;
+            if (confidenceFilter === 'high' && confidence <= 80) return false;
+            if (confidenceFilter === 'medium' && (confidence < 50 || confidence > 80)) return false;
+            if (confidenceFilter === 'low' && confidence >= 50) return false;
+            
+            return true;
+        });
+        
+        currentPage = 1;
+        renderProducts();
+async function loadProducts() {
+    showLoading(true);
+    try {
+        const response = await apiCall('/api/products/all');
+        allProducts = response.products;
+        applyFilters();
+        updateStatistics();
+    } catch (error) {
+        showAlert('Failed to load products: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+// Load filter options
+async function loadFilterOptions() {
+    try {
+        const response = await apiCall('/api/products/filters');
+        
+        // Populate brand filter
+        const brandSelect = document.getElementById('filter-brand');
+        response.brands.forEach(brand => {
+            if (brand) {
+                const option = document.createElement('option');
+                option.value = brand;
+                option.textContent = brand;
+                brandSelect.appendChild(option);
+            }
+        });
+        
+        // Populate tier1 filter
+        const tier1Select = document.getElementById('filter-tier1');
+        response.tier1s.forEach(tier => {
+            if (tier) {
+                const option = document.createElement('option');
+                option.value = tier;
+                option.textContent = tier;
+                tier1Select.appendChild(option);
+            }
+        });
+    } catch (error) {
+        console.error('Failed to load filter options:', error);
+    }
+}
+
+// Apply filters
+function applyFilters() {
+    const searchTerm = document.getElementById('search-input').value.toLowerCase();
+    const statusFilter = document.getElementById('filter-status').value;
+    const clipFilter = document.getElementById('filter-clip').value;
+    const brandFilter = document.getElementById('filter-brand').value;
+    const tierFilter = document.getElementById('filter-tier1').value;
+    const hasImageFilter = document.getElementById('filter-has-image').value;
+    const confidenceFilter = document.getElementById('filter-confidence').value;
+    
+    filteredProducts = allProducts.filter(product => {
+        // Search filter
+        if (searchTerm) {
+            const searchableText = `${product.Variant_SKU} ${product.Title} ${product.Brand} ${product.Variant_Barcode}`.toLowerCase();
+            if (!searchableText.includes(searchTerm)) return false;
+        }
+        
+        // Status filter
+        if (statusFilter && product.image_status !== statusFilter) return false;
+        
+        // CLIP filter
+        if (clipFilter) {
+            if (clipFilter === 'not_validated' && product.clip_action) return false;
+            if (clipFilter !== 'not_validated' && product.clip_action !== clipFilter) return false;
+        }
+        
+        // Brand filter
+        if (brandFilter && product.Brand !== brandFilter) return false;
+        
+        // Tier1 filter
+        if (tierFilter && product.Tier_1 !== tierFilter) return false;
+        
+        // Has image filter
+        if (hasImageFilter === 'yes' && !product.downloaded_image_path) return false;
+        if (hasImageFilter === 'no' && product.downloaded_image_path) return false;
+        
+        // Confidence filter
+        const confidence = product.confidence || 0;
+        if (confidenceFilter === 'high' && confidence <= 80) return false;
+        if (confidenceFilter === 'medium' && (confidence < 50 || confidence > 80)) return false;
+        if (confidenceFilter === 'low' && confidence >= 50) return false;
+        
+        return true;
+    });
+    
+    currentPage = 1;
+    renderProducts();
+    updateStatistics();
+}
+
+// Clear filters
+function clearFilters() {
+    document.getElementById('search-input').value = '';
+    document.getElementById('filter-status').value = '';
+    document.getElementById('filter-brand').value = '';
+    document.getElementById('filter-tier1').value = '';
+    document.getElementById('filter-has-image').value = '';
+    document.getElementById('filter-confidence').value = '';
+    applyFilters();
+}
+
+// Render products table
+function renderProducts() {
+    const tbody = document.getElementById('products-tbody');
+    tbody.innerHTML = '';
+    
+    const start = (currentPage - 1) * itemsPerPage;
+    const end = start + itemsPerPage;
+    const pageProducts = filteredProducts.slice(start, end);
+    
+    pageProducts.forEach(product => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><input type="checkbox" class="bulk-select" data-sku="${product.Variant_SKU}" 
+                ${selectedProducts.has(product.Variant_SKU) ? 'checked' : ''} onchange="toggleProductSelection('${product.Variant_SKU}')"></td>
+            <td>${product.downloaded_image_path ? 
+                `<img src="/image/${product.Variant_SKU}" class="product-image-thumb" 
+                      onclick="showImageModal('${product.Variant_SKU}')" 
+                      onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                 <div class="no-image" style="display:none;">No Image</div>` : 
+                '<div class="no-image">No Image</div>'}</td>
+            <td><strong>${product.Variant_SKU}</strong></td>
+            <td>${product.Title || ''}</td>
+            <td>${product.Brand || ''}</td>
+            <td>${product.Variant_Barcode || ''}</td>
+            <td><span class="status-badge status-${product.image_status || 'not_processed'}">${product.image_status || 'not_processed'}</span></td>
+            <td>${product.confidence ? Math.round(product.confidence) + '%' : '-'}</td>
+            <td>
+                ${product.clip_confidence ? 
+                    `<span class="clip-score ${product.clip_action}" title="${product.clip_validation || ''}">
+                        ${Math.round(product.clip_confidence * 100)}%
+                        ${product.clip_action === 'auto_reject' ? '❌' : 
+                          product.clip_action === 'manual_review' ? '⚠️' : 
+                          product.clip_action === 'auto_approve' ? '✅' : ''}
+                    </span>` : '-'}
+            </td>
+            <td>${product.Tier_1 || ''}</td>
+            <td>${product.Tier_2 || ''}</td>
+            <td>
+                ${product.image_status === 'pending' ? 
+                    `<button class="btn btn-success btn-sm" onclick="approveProduct('${product.Variant_SKU}')">Approve</button>
+                     <button class="btn btn-danger btn-sm" onclick="declineProduct('${product.Variant_SKU}')">Decline</button>` :
+                product.image_status === 'approved' ?
+                    `<button class="btn btn-warning btn-sm" onclick="unapproveProduct('${product.Variant_SKU}')">Unapprove</button>
+                     <button class="btn btn-sm" onclick="reprocessProduct('${product.Variant_SKU}')">Reprocess</button>` :
+                product.image_status === 'not_processed' ?
+                    `<button class="btn btn-primary btn-sm" id="process-${product.Variant_SKU}" onclick="reprocessProduct('${product.Variant_SKU}')">Process</button>` :
+                    `<button class="btn btn-sm" id="reprocess-${product.Variant_SKU}" onclick="reprocessProduct('${product.Variant_SKU}')">Reprocess</button>`}
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+    
+    renderPagination();
+    updateBulkActionsBar();
+}
+
+// Render pagination
+function renderPagination() {
+    const pagination = document.getElementById('pagination');
+    pagination.innerHTML = '';
+    
+    const totalPages = Math.ceil(filteredProducts.length / itemsPerPage);
+    
+    // Previous button
+    const prevBtn = document.createElement('button');
+    prevBtn.className = 'page-btn';
+    prevBtn.textContent = 'Previous';
+    prevBtn.disabled = currentPage === 1;
+    prevBtn.onclick = () => {
+        if (currentPage > 1) {
+            currentPage--;
+            renderProducts();
+        }
+    };
+    pagination.appendChild(prevBtn);
+    
+    // Page numbers
+    for (let i = Math.max(1, currentPage - 2); i <= Math.min(totalPages, currentPage + 2); i++) {
+        const pageBtn = document.createElement('button');
+        pageBtn.className = `page-btn ${i === currentPage ? 'active' : ''}`;
+        pageBtn.textContent = i;
+        pageBtn.onclick = () => {
+            currentPage = i;
+            renderProducts();
+        };
+        pagination.appendChild(pageBtn);
+    }
+    
+    // Next button
+    const nextBtn = document.createElement('button');
+    nextBtn.className = 'page-btn';
+    nextBtn.textContent = 'Next';
+    nextBtn.disabled = currentPage === totalPages;
+    nextBtn.onclick = () => {
+        if (currentPage < totalPages) {
+            currentPage++;
+            renderProducts();
+        }
+    };
+    pagination.appendChild(nextBtn);
+    
+    // Page info
+    const pageInfo = document.createElement('span');
+    pageInfo.style.marginLeft = '1rem';
+    pageInfo.textContent = `Showing ${Math.min(filteredProducts.length, (currentPage - 1) * itemsPerPage + 1)}-${Math.min(filteredProducts.length, currentPage * itemsPerPage)} of ${filteredProducts.length} products`;
+    pagination.appendChild(pageInfo);
+}
+
+// Update statistics
+function updateStatistics() {
+    const stats = {
+        total: allProducts.length,
+        approved: allProducts.filter(p => p.image_status === 'approved').length,
+        pending: allProducts.filter(p => p.image_status === 'pending').length,
+        declined: allProducts.filter(p => p.image_status === 'declined').length,
+        unprocessed: allProducts.filter(p => p.image_status === 'not_processed' || !p.image_status).length,
+        selected: selectedProducts.size
+    };
+    
+    document.getElementById('stat-total').textContent = stats.total;
+    document.getElementById('stat-approved').textContent = stats.approved;
+    document.getElementById('stat-pending').textContent = stats.pending;
+    document.getElementById('stat-declined').textContent = stats.declined;
+    document.getElementById('stat-unprocessed').textContent = stats.unprocessed;
+    document.getElementById('stat-selected').textContent = stats.selected;
+}
+
+// Toggle select all
+function toggleSelectAll() {
+    const selectAll = document.getElementById('select-all').checked;
+    const checkboxes = document.querySelectorAll('.bulk-select');
+    
+    checkboxes.forEach(checkbox => {
+        checkbox.checked = selectAll;
+        const sku = checkbox.dataset.sku;
+        if (selectAll) {
+            selectedProducts.add(sku);
+        } else {
+            selectedProducts.delete(sku);
+        }
+    });
+    
+    updateBulkActionsBar();
+    updateStatistics();
+}
+
+// Toggle product selection
+function toggleProductSelection(sku) {
+    if (selectedProducts.has(sku)) {
+        selectedProducts.delete(sku);
+    } else {
+        selectedProducts.add(sku);
+    }
+    updateBulkActionsBar();
+    updateStatistics();
+}
+
+// Update bulk actions bar
+function updateBulkActionsBar() {
+    const bar = document.getElementById('bulk-actions-bar');
+    const selectedCount = document.getElementById('selected-count');
+    
+    if (selectedProducts.size > 0) {
+        bar.classList.add('active');
+        selectedCount.textContent = selectedProducts.size;
+    } else {
+        bar.classList.remove('active');
+    }
+}
+
+// Clear selection
+function clearSelection() {
+    selectedProducts.clear();
+    document.getElementById('select-all').checked = false;
+    document.querySelectorAll('.bulk-select').forEach(cb => cb.checked = false);
+    updateBulkActionsBar();
+    updateStatistics();
+}
+
+// Product actions
+async function approveProduct(sku) {
+    try {
+        await apiCall(`/api/approve/${sku}`);
+        showAlert(`Product ${sku} approved`, 'success');
+        await loadProducts();
+    } catch (error) {
+        showAlert('Failed to approve: ' + error.message, 'error');
+    }
+}
+
+async function declineProduct(sku) {
+    try {
+        await apiCall(`/api/decline/${sku}`);
+        showAlert(`Product ${sku} declined`, 'warning');
+        await loadProducts();
+    } catch (error) {
+        showAlert('Failed to decline: ' + error.message, 'error');
+    }
+}
+
+async function unapproveProduct(sku) {
+    if (!confirm(`Unapprove product ${sku}? This will move it back to pending status.`)) return;
+    
+    try {
+        const response = await fetch(`/api/product/${sku}/status`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ status: 'pending' })
+        });
+        
+        if (response.ok) {
+            showAlert('Product unapproved', 'success');
+            loadProducts();
+        } else {
+            const data = await response.json();
+            showAlert(data.error || 'Failed to unapprove', 'error');
+        }
+    } catch (error) {
+        showAlert('Error: ' + error.message, 'error');
+    }
+};
+
+const reprocessProduct = async (sku) => {
+    if (!confirm(`Reprocess product ${sku}? This will search for a new image.`)) return;
+    
+    // Update button to show processing
+    const btn = document.getElementById(`process-${sku}`) || document.getElementById(`reprocess-${sku}`);
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Processing...';
+    }
+    
+    showLoading(true);
+    try {
+        const response = await apiCall(`/api/reprocess/${sku}`, 'POST');
+        
+        // Show detailed status
+        if (response.success) {
+            if (btn) {
+                btn.innerHTML = '✅ Complete';
+                btn.classList.remove('btn-primary');
+                btn.classList.add('btn-success');
+            }
+            showAlert(`✅ ${response.message || 'Processing complete'}\nStatus: ${response.status || 'Updated'}`, 'success');
+        } else {
+            if (btn) {
+                btn.innerHTML = '❌ Failed';
+                btn.classList.add('btn-danger');
+            }
+            showAlert(`❌ ${response.message || 'Processing failed'}`, 'error');
+        }
+        
+        // Refresh the products list
+        setTimeout(() => loadProducts(), 3000);
+    } catch (error) {
+        if (btn) {
+            btn.innerHTML = '❌ Failed';
+            btn.classList.add('btn-danger');
+        }
+        showAlert(`❌ ${error.message || 'Processing failed'}`, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+// Bulk actions
+async function bulkApprove() {
+    if (!confirm(`Approve ${selectedProducts.size} products?`)) return;
+    
+    try {
+        await apiCall('/api/bulk-action', 'POST', {
+            action: 'approve',
+            skus: Array.from(selectedProducts)
+        });
+        showAlert(`${selectedProducts.size} products approved`, 'success');
+        clearSelection();
+        await loadProducts();
+    } catch (error) {
+        showAlert('Bulk approve failed: ' + error.message, 'error');
+    }
+}
+
+async function bulkDecline() {
+    if (!confirm(`Decline ${selectedProducts.size} products?`)) return;
+    
+    try {
+        await apiCall('/api/bulk-action', 'POST', {
+            action: 'decline',
+            skus: Array.from(selectedProducts)
+        });
+        showAlert(`${selectedProducts.size} products declined`, 'warning');
+        clearSelection();
+        await loadProducts();
+    } catch (error) {
+        showAlert('Bulk decline failed: ' + error.message, 'error');
+    }
+}
+
+async function bulkReprocess() {
+    if (!confirm(`Reprocess ${selectedProducts.size} products? This may take a while.`)) return;
+    
+    showLoading(true);
+    try {
+        let processed = 0;
+        let failed = 0;
+        
+        for (const sku of selectedProducts) {
+            try {
+                const result = await apiCall(`/api/reprocess/${sku}`, 'POST');
+                
+                // Update button to show processing
+                const btn = document.getElementById(`process-${sku}`) || document.getElementById(`reprocess-${sku}`);
+                if (btn) {
+                    btn.disabled = true;
+                    btn.innerHTML = '⏳ Processing...';
+                }
+                
+                try {
+                    const response = await apiCall(`/api/reprocess/${sku}`, 'POST');
+                    
+                    // Show detailed status
+                    if (response.success) {
+                        if (btn) {
+                            btn.innerHTML = '✅ Complete';
+                            btn.classList.remove('btn-primary');
+                            btn.classList.add('btn-success');
+                        }
+                        processed++;
+                    } else {
+                        if (btn) {
+                            btn.innerHTML = '❌ Failed';
+                            btn.classList.add('btn-danger');
+                        }
+                        failed++;
+                    }
+                } catch (error) {
+                    if (btn) {
+                        btn.innerHTML = '❌ Failed';
+                        btn.classList.add('btn-danger');
+                    }
+                    failed++;
+                }
+            } catch (error) {
+                failed++;
+            }
+        }
+        
+        showAlert(`Reprocessed: ${processed} success, ${failed} failed`, processed > 0 ? 'success' : 'warning');
+        clearSelection();
+        await loadProducts();
+    } catch (error) {
+        showAlert('Bulk reprocess failed: ' + error.message, 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+// Export selected
+async function exportSelected() {
+    if (selectedProducts.size === 0) {
+        showAlert('No products selected', 'warning');
+        return;
+    }
+    
+    try {
+        const result = await apiCall('/api/export/selected', 'POST', {
+            skus: Array.from(selectedProducts)
+        });
+        window.location.href = result.download_url;
+        showAlert('Export completed', 'success');
+    } catch (error) {
+        showAlert('Export failed: ' + error.message, 'error');
+    }
+}
+
+// Image modal
+function showImageModal(sku) {
+    const product = allProducts.find(p => p.Variant_SKU === sku);
+    if (!product) return;
+    
+    currentModalSku = sku;
+    document.getElementById('modalTitle').textContent = product.Title || 'Product Image';
+    document.getElementById('modalImage').src = `/image/${sku}`;
+    document.getElementById('modalInfo').innerHTML = `
+        <strong>SKU:</strong> ${product.Variant_SKU}<br>
+        <strong>Brand:</strong> ${product.Brand || 'Unknown'}<br>
+        <strong>Barcode:</strong> ${product.Variant_Barcode || 'N/A'}<br>
+        <strong>Status:</strong> ${product.image_status || 'not_processed'}<br>
+        <strong>Confidence:</strong> ${product.confidence ? Math.round(product.confidence) + '%' : 'N/A'}
+    `;
+    document.getElementById('imageModal').style.display = 'block';
+}
+
+function closeModal() {
+    document.getElementById('imageModal').style.display = 'none';
+    currentModalSku = '';
+}
+
+async function approveFromModal() {
+    if (currentModalSku) {
+        await approveProduct(currentModalSku);
+        closeModal();
+    }
+}
+
+async function declineFromModal() {
+    if (currentModalSku) {
+        await declineProduct(currentModalSku);
+        closeModal();
+    }
+}
+
+// Show loading overlay
+function showLoading(show) {
+    const overlay = document.getElementById('loading-overlay');
+    if (show) {
+        overlay.classList.add('active');
+    } else {
+        overlay.classList.remove('active');
+    }
+}
+</script>
+
+{% endblock %}
